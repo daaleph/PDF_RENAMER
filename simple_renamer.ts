@@ -60,10 +60,14 @@ async function findAllPdfPaths(dir: string): Promise<string[]> {
 /**
  * Extracts text from the first 10 pages of a PDF file.
  */
+interface PdfData {
+    text: string;
+}
+
 async function extractTextFromPdf(pdfPath: string): Promise<string | null> {
     try {
         const dataBuffer = await fs.readFile(pdfPath);
-        const data = await executeSilently(() => pdf(dataBuffer, { max: 10 }));
+        const data = await executeSilently(() => pdf(dataBuffer, { max: 10 })) as PdfData;
         return data.text;
     } catch (error) {
         console.error(`  \x1b[31m[ERROR]\x1b[0m Could not parse PDF "${path.basename(pdfPath)}":`, (error as Error).message);
@@ -83,20 +87,22 @@ async function getNewFilenameFromLLM(pdfContent: string, originalName: string, m
 
     const prompt = `You are an expert librarian AI. Your task is to analyze text from a book's first few pages to extract its metadata.
 
-**Instructions:**
-1. Analyze the following text. The original filename was "${originalName}", which might be a clue.
-2. Extract the full title, including any subtitles. Subtitles are often separated by a colon (:).
-3. Extract all authors, the publication year, the edition, and the volume.
-4. If a component is not present, return null for that field.
-5. Your response MUST be a single, valid JSON object and nothing else.
+    **Instructions:**
+    1. Analyze the following text. The original filename was "${originalName}", which might be a clue.
+    2. Extract only the main title (exclude subtitles, i.e., anything after a colon (:)).
+    3. Extract all authors, the publication year, the edition, and the volume.
+    4. Replace all commas with hyphens (-) in all fields.
+    5. Convert special characters (e.g., accents, symbols) to their closest ASCII equivalents (e.g., 'é' to 'e', 'ñ' to 'n', '©' to 'c').
+    6. If a component is not present, return null for that field.
+    7. Your response MUST be a single, valid JSON object and nothing else.
 
-**JSON Schema:**
-{
-  "title": "string | null", "authors": ["string"] | null, "year": "string | null", "edition": "string | null", "volume": "string | null"
-}
----
-**TEXT TO ANALYZE:**
-"${truncatedContent}"`;
+    **JSON Schema:**
+    {
+    "title": "string | null", "authors": ["string"] | null, "year": "string | null", "edition": "string | null", "volume": "string | null"
+    }
+    ---
+    **TEXT TO ANALYZE:**
+    "${truncatedContent}"`;
 
     const safetySettings = [
         { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -148,8 +154,22 @@ async function getNewFilenameFromLLM(pdfContent: string, originalName: string, m
 
             // --- Validation check ---
             if (title && authors && Array.isArray(authors) && authors.length > 0) {
-                 // --- SUCCESS: We have the required data, format and return ---
-                const sanitize = (str: string) => str.replace(/[().,;:\[\]{}'"]/g, '').replace(/\s+/g, ' ').trim();
+                // --- SUCCESS: We have the required data, format and return ---
+                const specialCharMap: { [key: string]: string } = {
+                    'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'ñ': 'n', 'ç': 'c',
+                    'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ñ': 'N', 'Ç': 'C',
+                    '©': 'c', '®': 'r', '™': 'tm', '–': '-', '—': '-', '’': '', '“': '', '”': ''
+                };
+
+                const sanitize = (str: string) => {
+                    return str
+                        .replace(/,/g, '-') // Replace commas with hyphens
+                        .replace(/[().;:\[\]{}'"]/g, '') // Remove other special characters
+                        .replace(/[\u00C0-\u017F©®™–—’“”]/g, (char) => specialCharMap[char] || '') // Map special chars
+                        .replace(/\s+/g, ' ') // Normalize spaces
+                        .trim();
+                };
+
                 const collapse = (str: string) => str.replace(/\s+/g, '');
 
                 const toPascalCase = (text: string) =>
@@ -157,7 +177,9 @@ async function getNewFilenameFromLLM(pdfContent: string, originalName: string, m
                         .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
                         .join('');
 
-                const formattedTitle = title.split(':').map((part: string) => toPascalCase(part.trim())).join('-');
+                // Only take the main title (before any colon)
+                const mainTitle = title.split(':')[0].trim();
+                const formattedTitle = toPascalCase(sanitize(mainTitle));
                 const sanitizedAuthors = authors.map((author: string) => collapse(sanitize(author)));
 
                 let formattedAuthors: string;
@@ -170,12 +192,14 @@ async function getNewFilenameFromLLM(pdfContent: string, originalName: string, m
                 const finalParts = [
                     formattedTitle,
                     formattedAuthors,
-                    year,
+                    year ? sanitize(year) : null,
                     edition ? collapse(sanitize(edition)) : null,
                     volume ? collapse(sanitize(volume)) : null
                 ].filter(Boolean);
 
-                return finalParts.join('_'); // Exit loop and function on success
+                // Ensure the final filename is not too long (e.g., limit to 100 characters)
+                const finalName = finalParts.join('_');
+                return finalName.length > 100 ? finalName.substring(0, 100) : finalName; // Exit loop and function on success
             }
             
             // --- Incomplete data, prepare for retry ---
