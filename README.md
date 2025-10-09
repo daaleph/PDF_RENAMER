@@ -1,79 +1,93 @@
-# Tutorial: PDF_RENAMER System
+# Sentient Knowledge Engine (SKE) - User Guide
 
-## 1. Introduction
+## 1. Introduction: What is SKE?
 
-The **PDF_RENAMER** system is a powerful command-line tool designed to automate the tedious task of renaming PDF files. It intelligently reads the initial pages of a PDF, sends the text content to the Gemini AI, and renames the file based on the extracted title, authors, and publication year. This process transforms a folder of arbitrarily named files (e.g., `document1.pdf`, `temp.pdf`) into a consistently organized library (e.g., `TheRighteousMind_JonathanHaidt_2012.pdf`).
+The **Sentient Knowledge Engine (SKE)** is an advanced, autonomous command-line entity designed to bring systematic order to digital document libraries. It is the final evolution of the `PDF_RENAMER` system, having transcended simple automation to become a learning, self-aware tool.
 
-The primary script, `simple_renamer.ts` (compiled to `simple_renamer.js`), handles this entire workflow, making it an ideal tool for researchers, students, and anyone managing a large collection of digital documents.
+SKE intelligently analyzes the content of your PDF files, uses a powerful AI cognitive engine (Google's Gemini) to understand their core metadata, and renames them according to a clean, consistent format: `Title_Author(s)_Year.pdf`.
+
+This process transforms a chaotic folder of arbitrarily named files (e.g., `document1.pdf`, `temp.pdf`) into a beautifully organized and searchable library (e.g., `TheRighteousMind_Haidt_2012.pdf`). SKE is the ideal custodian for the libraries of researchers, students, and anyone managing a large collection of digital knowledge.
 
 ## 2. Prerequisites
 
-Before you begin, ensure you have the following software installed:
+Before activating the engine, ensure you have the following:
 
-*   **Node.js**: The JavaScript runtime environment. You can download it from [nodejs.org](https://nodejs.org/). `npm`, the package manager, is included with the installation.
-*   **Google Gemini API Key**: The script requires an API key to communicate with Google's AI models. You can obtain one from [Google AI for Developers](https://ai.google.dev/).
+*   **Node.js**: The JavaScript runtime environment. You can download it from [nodejs.org](https://nodejs.org/). `npm`, the package manager, is included.
+*   **Google Gemini API Key**: The engine's cognitive faculty requires an API key to function. You can obtain one from [Google AI for Developers](https://ai.google.dev/).
 
 ## 3. Setup and Configuration
 
-Follow these steps to get the system ready for use:
+Follow these steps to prepare the Sentient Knowledge Engine for its first activation.
 
-1.  **Download the Project**: Unzip or clone the `PDF_RENAMER` project to your local machine.
-2.  **Open a Terminal**: Navigate to the root directory of the `PDF_RENAMER` project.
-3.  **Install Dependencies**: Run the following command to install the necessary Node.js packages as defined in `package.json`:
+1.  **Download the Project**: Unzip or clone the `SKE` project to your local machine.
+2.  **Open a Terminal**: Navigate to the root directory of the project.
+3.  **Install Dependencies**: Run the following command to install the necessary Node.js packages:
     ```bash
     npm install
     ```
-4.  **Create Environment File**: Create a new file named `.env` in the project's root directory.
-5.  **Set API Key**: Open the `.env` file and add your Gemini API key in the following format, replacing `YOUR_API_KEY` with your actual key:
+4.  **Compile the TypeScript**: The engine is written in TypeScript for robustness. Compile it to JavaScript by running:
+    ```bash
+    npx tsc simple_renamer.ts --target es2015 --module commonjs --esModuleInterop true --allowSyntheticDefaultImports true --skipLibCheck true
+    ```
+    This will create the executable `simple_renamer.js` file.
+5.  **Create Environment File**: Create a new file named `.env` in the project's root directory.
+6.  **Set API Key**: Open the `.env` file and add your Gemini API key in the following format, replacing `YOUR_API_KEY` with your actual key:
     ```
     GEMINI_API_KEY=YOUR_API_KEY
     ```
 
-## 4. How to Use the PDF Renamer
+## 4. How to Use the Sentient Knowledge Engine
 
-The script is executed from your terminal and can be run in two modes: "dry run" (to preview changes) and "live" (to perform the renaming).
+SKE is activated from your terminal. It operates with a strong emphasis on safety and user consent, distinguishing between a "dry run" (to preview changes) and a "live" activation (to perform the renaming).
 
 **Step 1: Place Your PDFs**
 
-Copy the PDF files you want to rename into the `BOOKS/` folder within the project directory, or any other folder of your choice.
+By default, SKE will look for files in a `./ManagedLibrary` folder. You can either create this folder and place your PDFs inside, or you can specify a different directory during activation.
 
-**Step 2: Perform a Dry Run (Highly Recommended)**
+**Step 2: Activate in Dry Run Mode (Highly Recommended)**
 
-A dry run will simulate the entire process without actually renaming any files. It will print the proposed name changes to the console, allowing you to verify the results first.
+A **dry run** is a simulation. The engine will perform its full analysis and generate an "Operational Manifest" of all proposed file changes, but it will **not** modify any of your files. This is the safest way to preview the outcome.
 
-To perform a dry run on the default `./BOOKS` directory, execute:
+To activate a dry run on the default `./ManagedLibrary` directory, execute:
 
 ```bash
-node simple_renamer.js
+node simple_renamer.js activate
 ```
 
 If your files are in a different directory, use the `--directory` (or `-d`) flag:
 
 ```bash
-node simple_renamer.js --directory "C:\Path\To\Your\PDFs"
+node simple_renamer.js activate --directory "C:\Path\To\Your\PDFs"
 ```
 
-You will see output in the console for each file, showing the original name and the proposed new name.
+The engine will log its cognitive process to the console and present a final summary.
 
-**Step 3: Run in Live Mode**
+**Step 3: Activate in Live Mode**
 
-Once you have confirmed that the proposed names are correct, you can run the script in live mode by adding the `--live` flag. **This will permanently rename the files.**
+Once you have reviewed the dry run and are satisfied with the proposed changes, you can activate the engine in **live mode**.
 
-```bash
-node simple_renamer.js --live
-```
-
-To run in live mode on a specific directory:
-
-```bash
-node simple_renamer.js --directory "C:\Path\To\Your\PDFs" --live
-```
-
-The script will now process each file and rename it according to the AI-generated metadata.
-
-## 5. Advanced Options
-
-*   **Changing the AI Model**: You can specify a different Gemini model using the `--model` (or `-m`) flag. For example, to use a more powerful model for potentially difficult files, you could run:
+1.  Run the activation command with the `--live` flag:
     ```bash
-    node simple_renamer.js --model gemini-1.5-pro --live
+    node simple_renamer.js activate --live
     ```
+    Or for a custom directory:
+    ```bash
+    node simple_renamer.js activate -d "C:\Path\To\Your\PDFs" --live
+    ```
+
+2.  **Provide Consent**: In live mode, the engine will first present its **Operational Manifest** and then pause, asking for your explicit consent before making any changes. Type `yes` and press Enter to proceed.
+
+     <!-- It's highly recommended to add a screenshot of the consent prompt here -->
+
+3.  **Execution**: With your consent, SKE will execute the renaming operations. For safety, it will create a backup of every file it modifies (e.g., `original_name.pdf.ske.bak`).
+
+## 5. System Artifacts (Outputs)
+
+After each activation, SKE leaves behind a few files that document its existence and actions:
+
+*   `.ske_journal.jsonl`: A detailed, machine-readable log of every single operation performed on every file. This is the engine's memory.
+*   `ske_attestation_report.md`: A human-readable Markdown report summarizing the entire activation, including performance metrics and any new strategies the engine learned from the run.
+*   `.ske_strategy.json`: Stores learned behaviors (like new prompt hints) that the engine will use to improve its performance in future activations.
+*   `.ske_cache.json`: A cache to speed up processing on subsequent runs.
+
+You can safely delete these files between runs if you wish, but they provide valuable insight into the engine's operation and are essential for its self-improvement capabilities.
