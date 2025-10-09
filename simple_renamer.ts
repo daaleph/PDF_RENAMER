@@ -127,6 +127,35 @@ const logger = {
     decision: (label: string, value: any) => console.log(`  \x1b[34m[DECISION]\x1b[0m ${label}: \x1b[37m${value}\x1b[0m`),
 };
 
+class ProgressBar {
+    private total: number;
+    private current: number = 0;
+    private barLength: number = 40;
+
+    constructor(total: number) {
+        this.total = total;
+    }
+
+    // Call this method to update the progress bar
+    public update() {
+        this.current++;
+        const percent = (this.current / this.total);
+        const filledLength = Math.round(this.barLength * percent);
+        const emptyLength = this.barLength - filledLength;
+
+        const bar = '█'.repeat(filledLength) + ' '.repeat(emptyLength);
+        const percentageText = `${Math.round(percent * 100)}%`;
+        const countText = `${this.current}/${this.total}`;
+
+        // Use process.stdout.write and '\r' to write on a single line
+        process.stdout.write(`[SYSTEM] Progress: [${bar}] ${percentageText} (${countText})\r`);
+
+        if (this.current === this.total) {
+            process.stdout.write('\n'); // Move to the next line when complete
+        }
+    }
+}
+
 // --- L4-Culture & L5-Learning: The Entity's Memory and Mind ---
 class OperationalJournal {
     private logPath: string;
@@ -217,17 +246,14 @@ class AI_CognitionEngine {
         for (let attempt = 0; attempt < CONFIG.ai.maxRetries; attempt++) {
             try {
                 logger.debug(`Cognitive cycle starting for "${name}" (Attempt ${attempt + 1}).`);
-                const response = await this.ai.models.generateContent({
+                const result = await this.ai.models.generateContent({
                     model: CONFIG.ai.model,
                     ...request
                 });
 
-                if (!response) {
-                    logger.warn(`Cognitive cycle for "${name}" received no response object (potentially blocked). Retrying...`);
-                    continue;
-                }
-
-                const rawText = response.text;
+                // Correctly access the 'text' property directly from the result object, as per your screenshot.
+                const rawText = result.text;
+                // --- END FIX ---
 
                 if (!rawText) {
                     logger.warn(`Cognitive cycle for "${name}" returned an empty text response. Retrying...`);
@@ -240,7 +266,6 @@ class AI_CognitionEngine {
 
                 let correctedTitle = parsed.title;
                 if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
-                    // --- ENHANCED LOGGING ---
                     logger.decision(`Self-Correction`, `Discarded title "${parsed.title}" due to overlap with folder archetype "${context.folderArchetype.title}".`);
                     correctedTitle = null;
                 }
@@ -251,7 +276,6 @@ class AI_CognitionEngine {
                     year: parsed.year || context.folderArchetype.year,
                     fileType: parsed.fileType,
                     confidence: parsed.confidence || 0.5,
-                    // --- ADDITIONS ---
                     documentType: parsed.documentType,
                     journal: parsed.journal,
                     volume: parsed.volume,
@@ -296,16 +320,17 @@ class FileEntity {
 class LifecycleManager {
     private journal: OperationalJournal;
     constructor(journal: OperationalJournal) { this.journal = journal; }
-    async rename(entity: FileEntity, newName: string, startTime: number): Promise<void> {
-        // --- ENHANCED LOGGING ---
+    async rename(entity: FileEntity, newName: string, startTime: number): Promise<boolean> { // <-- Change return type to Promise<boolean>
         logger.trace(entity.name, newName);
         const newPath = path.join(path.dirname(entity.fullPath), newName);
         try {
             await fs.copyFile(entity.fullPath, `${entity.fullPath}${CONFIG.processing.backupExtension}`);
             await fs.rename(entity.fullPath, newPath);
             await this.journal.record({ file: entity.name, status: 'SUCCESS', details: 'Backup created and file renamed.', durationMs: Date.now() - startTime, newName });
+            return true; // <-- Return true on success
         } catch (e) {
             await this.journal.record({ file: entity.name, status: 'FAILURE_RENAME', details: `Rename failed: ${(e as Error).message}`, durationMs: Date.now() - startTime });
+            return false; // <-- Return false on failure
         }
     }
 }
@@ -355,6 +380,12 @@ class SystemCore {
             // Rule 3: Replace punctuation with a single hyphen. This is the main change.
             if (mode === 'title') {
                 text = text.replace(/[,.;:!?]+/g, '-'); // Use + to handle multiple punctuations
+                text = text.replace(/(\w+)'(\w+)/g, '$1s');
+                text = text.replace(/(\w+)’(\w+)/g, '$1s');
+            } else { // mode === 'author'
+                // For authors, punctuation and spaces both act as separators.
+                // Replace all punctuation and spaces with a single hyphen.
+                text = text.replace(/[,.\s]+/g, '-');   
             }
 
             // Rule 4: Clean up spaces around the new hyphens
@@ -363,7 +394,7 @@ class SystemCore {
             // Final Step: Process for output
             if (mode === 'author') {
                 // For authors, just remove all remaining spaces.
-                return text.replace(/\s+/g, '');
+                return text.split('-').map(part => part.trim().replace(/\s+/g, '')).join('-');
             } else { // mode === 'title'
                 // For titles, we now split by the hyphen, process each part, and rejoin.
                 return text.split('-').map(part => 
@@ -471,7 +502,7 @@ class SystemCore {
         }
         logger.decision('  -> File Type', validatedData.fileType || 'Content');
 
-        if (validatedData.confidence < 0.75) {
+        if (validatedData.confidence < 0.7) {
             logger.warn(`Skipping: Cognitive confidence (${validatedData.confidence.toFixed(2)}) is below the 0.75 threshold.`);
             await this.journal.record({ file: entity.name, status: 'SKIPPED_LOW_CONF', details: `Confidence score (${validatedData.confidence.toFixed(2)}) below threshold.`, durationMs: Date.now() - startTime, confidence: validatedData.confidence });
             return null;
@@ -491,8 +522,11 @@ class SystemCore {
         return { from: entity.name, to: newName, entity };
     }
 
+    // In class SystemCore
+
     public async activate(liveMode: boolean) {
         logger.system(`Activating ${CONFIG.entity.name} v${CONFIG.entity.version}`);
+        logger.system(`IS LIVE? ${liveMode}`)
         if (!await this.selfValidate()) return;
 
         await this.loadCache();
@@ -508,20 +542,45 @@ class SystemCore {
         const manifest: { entity: FileEntity, newName: string }[] = [];
 
         logger.system(`Cognitive analysis phase starting for ${entities.length} entities...`);
+
+        const progressBar = new ProgressBar(entities.length);
+
         const limit = pLimit(this.strategyEngine.getConcurrency());
+        
+        // --- FIX STARTS HERE ---
+        
+        // Each task is now wrapped in a try...catch to prevent a single failure from crashing the entire process.
         const tasks = entities.map(entity => limit(async () => {
-            const result = await this.processEntity(entity, context);
-            if (result) manifest.push({ entity: result.entity, newName: result.to });
+            try {
+                const result = await this.processEntity(entity, context);
+                if (result) {
+                    manifest.push({ entity: result.entity, newName: result.to });
+                }
+            } catch (e) {
+                // This is the crucial error handler. It catches unexpected crashes during a single file's processing.
+                logger.error(`A critical, unhandled error occurred while processing entity "${entity.name}"`, e as Error);
+                // We record this as an AI failure in the journal.
+                await this.journal.record({
+                    file: entity.name,
+                    status: 'FAILURE_AI',
+                    details: `Unhandled exception during processing: ${(e as Error).message}`,
+                    durationMs: 0
+                });
+            } finally {
+                progressBar.update();
+            }
         }));
+        
+        // This will now ALWAYS complete, because each individual task handles its own errors.
         await Promise.all(tasks);
+
+        // --- FIX ENDS HERE ---
 
         if (manifest.length === 0) {
             logger.info('Analysis complete. No required modifications found.');
             await this.generateAttestationReport(false);
             return;
         }
-
-        // --- NEW, NON-INTERACTIVE LOGIC STARTS HERE ---
 
         if (liveMode) {
             // In live mode, state the intent and execute automatically.
@@ -534,7 +593,14 @@ class SystemCore {
             console.log('\x1b[33mBackups will be created for all modified files.\x1b[0m\n');
 
             const executionTasks = manifest.map(({ entity, newName }) =>
-                limit(() => this.lifecycleManager.rename(entity, newName, Date.now()))
+                limit(async () => {
+                    const success = await this.lifecycleManager.rename(entity, newName, Date.now());
+                    if (success) {
+                        logger.success(`Successfully renamed "${entity.name}"`);
+                    } else {
+                        logger.error(`Failed to rename "${entity.name}"`);
+                    }
+                })
             );
             await Promise.all(executionTasks);
             logger.success('Execution phase complete.');
@@ -548,13 +614,10 @@ class SystemCore {
             logger.info('No files were changed. Run with the --live flag to execute.');
         }
 
-        // --- NEW LOGIC ENDS HERE ---
-
         logger.system('Introspection phase: Learning from operational journal...');
         await this.strategyEngine.learnFrom(this.journal);
 
         await this.saveCache();
-        // Pass 'liveMode' to the report to accurately reflect the outcome.
         await this.generateAttestationReport(liveMode && manifest.length > 0); 
         logger.system('Deactivation complete.');
     }
@@ -635,7 +698,11 @@ async function main() {
 
     if (argv._[0] === 'activate') {
         const { directory, live } = argv as unknown as { directory: string; live: boolean; };
-        const core = new SystemCore(directory, process.env.GEMINI_API_KEY!);
+
+        const absoluteDirectoryPath = path.resolve(directory);
+        logger.system(`Resolved target directory to: ${absoluteDirectoryPath}`);
+
+        const core = new SystemCore(absoluteDirectoryPath, process.env.GEMINI_API_KEY!);
         await core.activate(live);
     }
 }

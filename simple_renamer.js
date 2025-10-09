@@ -133,6 +133,28 @@ const logger = {
     trace: (from, to) => console.log(`  \x1b[35m[TRACE]\x1b[0m \x1b[33m${from}\x1b[0m -> \x1b[32m${to}\x1b[0m`),
     decision: (label, value) => console.log(`  \x1b[34m[DECISION]\x1b[0m ${label}: \x1b[37m${value}\x1b[0m`),
 };
+class ProgressBar {
+    constructor(total) {
+        this.current = 0;
+        this.barLength = 40;
+        this.total = total;
+    }
+    // Call this method to update the progress bar
+    update() {
+        this.current++;
+        const percent = (this.current / this.total);
+        const filledLength = Math.round(this.barLength * percent);
+        const emptyLength = this.barLength - filledLength;
+        const bar = '█'.repeat(filledLength) + ' '.repeat(emptyLength);
+        const percentageText = `${Math.round(percent * 100)}%`;
+        const countText = `${this.current}/${this.total}`;
+        // Use process.stdout.write and '\r' to write on a single line
+        process.stdout.write(`[SYSTEM] Progress: [${bar}] ${percentageText} (${countText})\r`);
+        if (this.current === this.total) {
+            process.stdout.write('\n'); // Move to the next line when complete
+        }
+    }
+}
 // --- L4-Culture & L5-Learning: The Entity's Memory and Mind ---
 class OperationalJournal {
     constructor(directory) { this.logPath = path.join(directory, CONFIG.persistence.journalFile); }
@@ -231,12 +253,10 @@ class AI_CognitionEngine {
             for (let attempt = 0; attempt < CONFIG.ai.maxRetries; attempt++) {
                 try {
                     logger.debug(`Cognitive cycle starting for "${name}" (Attempt ${attempt + 1}).`);
-                    const response = yield this.ai.models.generateContent(Object.assign({ model: CONFIG.ai.model }, request));
-                    if (!response) {
-                        logger.warn(`Cognitive cycle for "${name}" received no response object (potentially blocked). Retrying...`);
-                        continue;
-                    }
-                    const rawText = response.text;
+                    const result = yield this.ai.models.generateContent(Object.assign({ model: CONFIG.ai.model }, request));
+                    // Correctly access the 'text' property directly from the result object, as per your screenshot.
+                    const rawText = result.text;
+                    // --- END FIX ---
                     if (!rawText) {
                         logger.warn(`Cognitive cycle for "${name}" returned an empty text response. Retrying...`);
                         continue;
@@ -246,7 +266,6 @@ class AI_CognitionEngine {
                     logger.debug(`LLM Reasoning for "${name}": ${parsed.reasoning || 'None'}`);
                     let correctedTitle = parsed.title;
                     if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
-                        // --- ENHANCED LOGGING ---
                         logger.decision(`Self-Correction`, `Discarded title "${parsed.title}" due to overlap with folder archetype "${context.folderArchetype.title}".`);
                         correctedTitle = null;
                     }
@@ -256,7 +275,6 @@ class AI_CognitionEngine {
                         year: parsed.year || context.folderArchetype.year,
                         fileType: parsed.fileType,
                         confidence: parsed.confidence || 0.5,
-                        // --- ADDITIONS ---
                         documentType: parsed.documentType,
                         journal: parsed.journal,
                         volume: parsed.volume,
@@ -312,14 +330,11 @@ class LifecycleManager {
                 yield fs_1.promises.copyFile(entity.fullPath, `${entity.fullPath}${CONFIG.processing.backupExtension}`);
                 yield fs_1.promises.rename(entity.fullPath, newPath);
                 yield this.journal.record({ file: entity.name, status: 'SUCCESS', details: 'Backup created and file renamed.', durationMs: Date.now() - startTime, newName });
+                return true; // <-- Return true on success
             }
             catch (e) {
-                // --- ENHANCED ERROR LOGGING ---
-                logger.error(`!!! CRITICAL: RENAME FAILED for "${entity.name}" !!!`, e);
-                // Also log the full path to help diagnose permission issues
-                logger.error(`  -> Target Path: ${newPath}`);
-                // --- END OF ENHANCEMENT ---
                 yield this.journal.record({ file: entity.name, status: 'FAILURE_RENAME', details: `Rename failed: ${e.message}`, durationMs: Date.now() - startTime });
+                return false; // <-- Return false on failure
             }
         });
     }
@@ -362,13 +377,20 @@ class SystemCore {
             // Rule 3: Replace punctuation with a single hyphen. This is the main change.
             if (mode === 'title') {
                 text = text.replace(/[,.;:!?]+/g, '-'); // Use + to handle multiple punctuations
+                text = text.replace(/(\w+)'(\w+)/g, '$1s');
+                text = text.replace(/(\w+)’(\w+)/g, '$1s');
+            }
+            else { // mode === 'author'
+                // For authors, punctuation and spaces both act as separators.
+                // Replace all punctuation and spaces with a single hyphen.
+                text = text.replace(/[,.\s]+/g, '-');
             }
             // Rule 4: Clean up spaces around the new hyphens
             text = text.replace(/\s*-\s*/g, '-');
             // Final Step: Process for output
             if (mode === 'author') {
                 // For authors, just remove all remaining spaces.
-                return text.replace(/\s+/g, '');
+                return text.split('-').map(part => part.trim().replace(/\s+/g, '')).join('-');
             }
             else { // mode === 'title'
                 // For titles, we now split by the hyphen, process each part, and rejoin.
@@ -463,7 +485,7 @@ class SystemCore {
                 logger.decision('  -> Volume', validatedData.volume || 'N/A');
             }
             logger.decision('  -> File Type', validatedData.fileType || 'Content');
-            if (validatedData.confidence < 0.75) {
+            if (validatedData.confidence < 0.7) {
                 logger.warn(`Skipping: Cognitive confidence (${validatedData.confidence.toFixed(2)}) is below the 0.75 threshold.`);
                 yield this.journal.record({ file: entity.name, status: 'SKIPPED_LOW_CONF', details: `Confidence score (${validatedData.confidence.toFixed(2)}) below threshold.`, durationMs: Date.now() - startTime, confidence: validatedData.confidence });
                 return null;
@@ -480,9 +502,11 @@ class SystemCore {
             return { from: entity.name, to: newName, entity };
         });
     }
+    // In class SystemCore
     activate(liveMode) {
         return __awaiter(this, void 0, void 0, function* () {
             logger.system(`Activating ${CONFIG.entity.name} v${CONFIG.entity.version}`);
+            logger.system(`IS LIVE? ${liveMode}`);
             if (!(yield this.selfValidate()))
                 return;
             yield this.loadCache();
@@ -495,19 +519,40 @@ class SystemCore {
             const entities = allPaths.map(p => new FileEntity(p));
             const manifest = [];
             logger.system(`Cognitive analysis phase starting for ${entities.length} entities...`);
+            const progressBar = new ProgressBar(entities.length);
             const limit = (0, p_limit_1.default)(this.strategyEngine.getConcurrency());
+            // --- FIX STARTS HERE ---
+            // Each task is now wrapped in a try...catch to prevent a single failure from crashing the entire process.
             const tasks = entities.map(entity => limit(() => __awaiter(this, void 0, void 0, function* () {
-                const result = yield this.processEntity(entity, context);
-                if (result)
-                    manifest.push({ entity: result.entity, newName: result.to });
+                try {
+                    const result = yield this.processEntity(entity, context);
+                    if (result) {
+                        manifest.push({ entity: result.entity, newName: result.to });
+                    }
+                }
+                catch (e) {
+                    // This is the crucial error handler. It catches unexpected crashes during a single file's processing.
+                    logger.error(`A critical, unhandled error occurred while processing entity "${entity.name}"`, e);
+                    // We record this as an AI failure in the journal.
+                    yield this.journal.record({
+                        file: entity.name,
+                        status: 'FAILURE_AI',
+                        details: `Unhandled exception during processing: ${e.message}`,
+                        durationMs: 0
+                    });
+                }
+                finally {
+                    progressBar.update();
+                }
             })));
+            // This will now ALWAYS complete, because each individual task handles its own errors.
             yield Promise.all(tasks);
+            // --- FIX ENDS HERE ---
             if (manifest.length === 0) {
                 logger.info('Analysis complete. No required modifications found.');
                 yield this.generateAttestationReport(false);
                 return;
             }
-            // --- NEW, NON-INTERACTIVE LOGIC STARTS HERE ---
             if (liveMode) {
                 // In live mode, state the intent and execute automatically.
                 console.log('\n\x1b[1;31m--- LIVE MODE ENGAGED: EXECUTING AUTOMATICALLY ---');
@@ -517,7 +562,15 @@ class SystemCore {
                     logger.trace(manifest[0].entity.name, manifest[0].newName);
                 }
                 console.log('\x1b[33mBackups will be created for all modified files.\x1b[0m\n');
-                const executionTasks = manifest.map(({ entity, newName }) => limit(() => this.lifecycleManager.rename(entity, newName, Date.now())));
+                const executionTasks = manifest.map(({ entity, newName }) => limit(() => __awaiter(this, void 0, void 0, function* () {
+                    const success = yield this.lifecycleManager.rename(entity, newName, Date.now());
+                    if (success) {
+                        logger.success(`Successfully renamed "${entity.name}"`);
+                    }
+                    else {
+                        logger.error(`Failed to rename "${entity.name}"`);
+                    }
+                })));
                 yield Promise.all(executionTasks);
                 logger.success('Execution phase complete.');
             }
@@ -530,11 +583,9 @@ class SystemCore {
                 });
                 logger.info('No files were changed. Run with the --live flag to execute.');
             }
-            // --- NEW LOGIC ENDS HERE ---
             logger.system('Introspection phase: Learning from operational journal...');
             yield this.strategyEngine.learnFrom(this.journal);
             yield this.saveCache();
-            // Pass 'liveMode' to the report to accurately reflect the outcome.
             yield this.generateAttestationReport(liveMode && manifest.length > 0);
             logger.system('Deactivation complete.');
         });
@@ -627,7 +678,9 @@ function main() {
             .help().argv;
         if (argv._[0] === 'activate') {
             const { directory, live } = argv;
-            const core = new SystemCore(directory, process.env.GEMINI_API_KEY);
+            const absoluteDirectoryPath = path.resolve(directory);
+            logger.system(`Resolved target directory to: ${absoluteDirectoryPath}`);
+            const core = new SystemCore(absoluteDirectoryPath, process.env.GEMINI_API_KEY);
             yield core.activate(live);
         }
     });
