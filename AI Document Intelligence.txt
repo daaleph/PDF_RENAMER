@@ -1,0 +1,2009 @@
+﻿AI Document Intelligence
+
+About the project
+
+Powerful, autonomous engine designed to solve a critical and universal business problem: digital chaos. It addresses the challenge of managing vast, unorganized libraries of documents (PDFs, in this case) and intelligently transforms them into a structured, searchable, and valuable knowledge base. For any organization struggling with messy file servers, inconsistent naming conventions, or the inability to quickly find information within their own digital assets, this system serves as a powerful proof-of-concept for how AI can bring order, efficiency, and intelligence to data management.
+
+
+
+=================================================
+PROJECT CONTEXT FOR AI ANALYSIS
+=================================================
+This document contains the project structure and source code for review.
+Project root: C:\Users\camip\Documents\NACC\Devs\aleph\PDF_RENAMER
+Generated on: 10/20/2025 21:19:24
+
+-------------------------------------------------
+PROJECT FILE AND FOLDER STRUCTURE
+-------------------------------------------------
+
+PDF_RENAMER/
+  ARTICLES/
+  BOOKS/
+    .ske_cache.json
+    ske_attestation_report.md
+    ske_journal.jsonl
+  .env
+  .gitignore
+  ai_context.txt
+  COMPILING.md
+  contextualizer.ps1
+  formatter.py
+  GeneratingContent_GeminiAPI_GoogleAIForDevelopers.pdf
+  package.json
+  README.md
+  simple_renamer.js
+  simple_renamer.ts
+  tsconfig.json
+
+-------------------------------------------------
+PROJECT SOURCE CODE FILES
+-------------------------------------------------
+
+=========================================
+FILE: COMPILING.md
+=========================================
+``markdown
+Compiling 
+```bash
+npx tsc simple_renamer.ts --target es2015 --module commonjs --esModuleInterop true --allowSyntheticDefaultImports true --skipLibCheck true
+```
+``
+
+=========================================
+FILE: formatter.py
+=========================================
+``python
+#!/usr/bin/env python3
+"""
+Recursively scans a directory for PDF files and uses the Google Gemini API 
+to correct their filenames based on a specific capitalization rule.
+
+This script is built upon a provided template for robust Gemini API communication,
+including detailed logging, rate limit handling with exponential backoff, and
+the official Python SDK patterns.
+"""
+import os
+import time
+import random
+import logging
+from dotenv import load_dotenv
+import google.genai as genai
+
+# --- 1. Logging and Environment Configuration (from your template) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logging.info("Loading environment variables from .env file...")
+load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    logging.critical("Error: GEMINI_API_KEY environment variable not set in .env file. Exiting.")
+    exit(1)
+else:
+    logging.info("GEMINI_API_KEY loaded successfully.")
+
+# --- 2. Gemini Client Initialization (from your template) ---
+try:
+    logging.info("Initializing Google Gemini client...")
+    # Using the genai.Client class as required by your environment.
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    logging.info("Gemini client initialized successfully.")
+except Exception as e:
+    logging.critical(f"Fatal Error: Could not initialize the Gemini client: {e}", exc_info=True)
+    exit(1)
+
+
+# --- 3. Robust API Communication Function (adapted from your template) ---
+MAX_RETRIES = 5
+INITIAL_BACKOFF_SECONDS = 10 # Adjusted for potentially many small requests
+MAX_BACKOFF_SECONDS = 120
+
+def get_gemini_response(prompt: str) -> str:
+    """
+    Sends a prompt to the Google Gemini API and returns the response.
+    Includes an intelligent retry mechanism for rate limit errors.
+    """
+    logging.debug(f"Preparing to send prompt to Gemini model.")
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            logging.debug(f"Attempt {attempt + 1}/{MAX_RETRIES}: Calling Gemini API...")
+            response = client.models.generate_content(
+                model=os.getenv("MODEL_NAME"), # The model path format is typically "models/model-name"
+                contents=prompt
+            )
+            
+            logging.debug(f"Attempt {attempt + 1}/{MAX_RETRIES}: API call successful.")
+            
+            if response.text:
+                return response.text.strip()
+            else:
+                logging.warning("Response received, but it contains no text. It may have been blocked.")
+                # Return empty string to signify a non-successful but non-crashing response
+                return ""
+
+        except Exception as e:
+            error_message = str(e).upper()
+            
+            # Check for common rate limit error indicators
+            if "429" in error_message or "RESOURCE_EXHAUSTED" in error_message or "RATE LIMIT" in error_message:
+                if attempt < MAX_RETRIES - 1:
+                    backoff_time = min(INITIAL_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
+                    jitter = random.uniform(0, 3)
+                    wait_time = backoff_time + jitter
+                    
+                    logging.warning(
+                        f"Attempt {attempt + 1}/{MAX_RETRIES}: Rate limit hit. "
+                        f"Waiting for {wait_time:.2f} seconds before next retry."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logging.error(f"Gemini API failed after {MAX_RETRIES} attempts due to persistent rate limiting.")
+                    # Return empty to allow the main loop to continue with other files
+                    return ""
+            else:
+                logging.error(f"Attempt {attempt + 1}/{MAX_RETRIES}: A non-recoverable error occurred: {e}")
+                return "" # Return empty so one error doesn't stop the whole script
+    
+    logging.error(f"Failed to get response for prompt after {MAX_RETRIES} attempts.")
+    return ""
+
+# --- 4. AI-Powered File Formatting Logic ---
+
+def get_formatted_title_with_ai(original_title: str) -> str | None:
+    """
+    Constructs a prompt, gets the AI's decision, and parses it.
+    
+    Returns:
+        The new title if a change is needed, otherwise None.
+    """
+    prompt = f"""
+    You are an expert file name formatter. Your task is to analyze a filename and correct it based on a specific rule.
+
+    THE RULE:
+    A filename is correctly formatted if every distinct word starts with a capital letter. This rule applies even when words are not separated by spaces. Underscores, hyphens, and existing capitalization should be respected and preserved where appropriate.
+
+    EXAMPLES of poorly formatted names and their corrections:
+    - "Therighteousmindwhygoodpeoplearedividedbypoliticsandreligion" -> "TheRighteousMindWhyGoodPeopleAreDividedByPoliticsAndReligion"
+    - "Chapter_01_The_Basics" -> "Chapter01_01TheBasics"
+
+    EXAMPLES of correctly formatted names (DO NOT CHANGE THESE):
+    - "PersonalityEmotionalandSelf-AssessedIntelligenceandRightWingAuthoritarianism"
+    - "HowtheDarkTriadtraitspredictrelationshipchoices"
+    - "TheLuciferEffectUnderstandingHowGoodPeopleTurnEvil"
+    - "SNAKESINSUITSWhenPsychopathsGotoWork"
+
+    YOUR TASK:
+    Analyze the filename provided below. First, decide if it needs to be reformatted. Then, provide the corrected name only if it needs changing.
+
+    Respond in the following strict format, with no other text or explanation:
+    Decision: [YES or NO]
+    Corrected Name: [The new name if Decision is YES, otherwise the original name]
+
+    ---
+    Filename to analyze: "{original_title}"
+    """
+    
+    response_text = get_gemini_response(prompt)
+    
+    if not response_text:
+        logging.error(f"Received no response from AI for title: '{original_title}'")
+        return None
+
+    try:
+        decision = "NO"
+        corrected_name = original_title
+
+        for line in response_text.strip().split('\n'):
+            if line.lower().startswith("decision:"):
+                decision = line.split(":", 1)[1].strip().upper()
+            elif line.lower().startswith("corrected name:"):
+                corrected_name = line.split(":", 1)[1].strip()
+
+        if decision == "YES" and original_title != corrected_name:
+            logging.info(f"AI decided to format. New name: '{corrected_name}'")
+            return corrected_name
+        else:
+            logging.info("AI decided no change is needed.")
+            return None
+            
+    except IndexError:
+        logging.warning(f"Could not parse AI response: '{response_text}'. Skipping this file.")
+        return None
+
+# --- 5. Main Directory Processing Logic ---
+
+def process_directory(root_dir: str):
+    """
+    Recursively walks through a directory, asks the AI to format PDF titles,
+    and renames the files if necessary.
+    """
+    logging.info(f"--- Starting to process directory: {root_dir} ---")
+    for subdir, _, files in os.walk(root_dir):
+        for filename in files:
+            # Process only PDF files, case-insensitively
+            if filename.lower().endswith(".pdf"):
+                original_path = os.path.join(subdir, filename)
+                title_part = filename[:-4]  # Remove .pdf extension
+
+                logging.info(f"Analyzing file: {filename}")
+                
+                new_title_part = get_formatted_title_with_ai(title_part)
+                
+                if new_title_part:
+                    new_filename = new_title_part + ".pdf"
+                    new_path = os.path.join(subdir, new_filename)
+                    
+                    try:
+                        os.rename(original_path, new_path)
+                        logging.info(f"SUCCESS: Renamed '{filename}' to '{new_filename}'")
+                    except OSError as e:
+                        logging.error(f"FAILURE: Could not rename '{filename}'. Error: {e}")
+                
+                print("-" * 20) # Visual separator in console
+    
+    logging.info("--- Directory processing complete. ---")
+
+
+# --- 6. Script Execution ---
+if __name__ == "__main__":
+    # --- IMPORTANT ---
+    # 1. Replace this path with the absolute path to your "ATTRACTIVENESS" directory.
+    target_directory = "C:\\Users\\camip\\Documents\\NACC\\LECTURES\\ATTRACTIVENESS"
+    
+    # 2. IT IS STRONGLY RECOMMENDED TO BACK UP YOUR FILES BEFORE RUNNING.
+    
+    logging.info("--- AI File Renamer Initializing ---")
+    
+    if os.path.isdir(target_directory):
+        # Safety confirmation step
+        print(f"\nWARNING: This script will permanently rename files in the following directory:")
+        print(f"  {target_directory}\n")
+        print("Please ensure you have a backup of your data before proceeding.")
+        
+        consent = input("Are you sure you want to continue? (type 'yes' to proceed): ")
+        
+        if consent.lower() == 'yes':
+            process_directory(target_directory)
+        else:
+            logging.info("Operation cancelled by the user.")
+    else:
+        logging.error(f"The specified directory does not exist: '{target_directory}'")
+``
+
+=========================================
+FILE: package.json
+=========================================
+``json
+{
+  "name": "reductions",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/yargs": "^17.0.33",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@google/genai": "^1.20.0",
+    "dotenv": "^17.2.0",
+    "mime": "^4.1.0",
+    "node-cache": "^5.1.2",
+    "p-limit": "^7.1.1",
+    "pdf-parse": "^1.1.1",
+    "yargs": "^18.0.0"
+  }
+}
+
+``
+
+=========================================
+FILE: README.md
+=========================================
+``markdown
+# Sentient Knowledge Engine (SKE) - User Guide
+
+## 1. Introduction: What is SKE?
+
+The **Sentient Knowledge Engine (SKE)** is an advanced, autonomous command-line entity designed to bring systematic order to digital document libraries. It is the final evolution of the `PDF_RENAMER` system, having transcended simple automation to become a learning, self-aware tool.
+
+SKE intelligently analyzes the content of your PDF files, uses a powerful AI cognitive engine (Google's Gemini) to understand their core metadata, and renames them according to a clean, consistent format: `Title_Author(s)_Year.pdf`.
+
+This process transforms a chaotic folder of arbitrarily named files (e.g., `document1.pdf`, `temp.pdf`) into a beautifully organized and searchable library (e.g., `TheRighteousMind_Haidt_2012.pdf`). SKE is the ideal custodian for the libraries of researchers, students, and anyone managing a large collection of digital knowledge.
+
+## 2. Prerequisites
+
+Before activating the engine, ensure you have the following:
+
+*   **Node.js**: The JavaScript runtime environment. You can download it from [nodejs.org](https://nodejs.org/). `npm`, the package manager, is included.
+*   **Google Gemini API Key**: The engine's cognitive faculty requires an API key to function. You can obtain one from [Google AI for Developers](https://ai.google.dev/).
+
+## 3. Setup and Configuration
+
+Follow these steps to prepare the Sentient Knowledge Engine for its first activation.
+
+1.  **Download the Project**: Unzip or clone the `SKE` project to your local machine.
+2.  **Open a Terminal**: Navigate to the root directory of the project.
+3.  **Install Dependencies**: Run the following command to install the necessary Node.js packages:
+    ```bash
+    npm install
+    ```
+4.  **Compile the TypeScript**: The engine is written in TypeScript for robustness. Compile it to JavaScript by running:
+    ```bash
+    npx tsc simple_renamer.ts --target es2015 --module commonjs --esModuleInterop true --allowSyntheticDefaultImports true --skipLibCheck true
+    ```
+    This will create the executable `simple_renamer.js` file.
+5.  **Create Environment File**: Create a new file named `.env` in the project's root directory.
+6.  **Set API Key**: Open the `.env` file and add your Gemini API key in the following format, replacing `YOUR_API_KEY` with your actual key:
+    ```
+    GEMINI_API_KEY=YOUR_API_KEY
+    ```
+
+## 4. How to Use the Sentient Knowledge Engine
+
+SKE is activated from your terminal. It operates with a strong emphasis on safety and user consent, distinguishing between a "dry run" (to preview changes) and a "live" activation (to perform the renaming).
+
+**Step 1: Place Your PDFs**
+
+By default, SKE will look for files in a `./ManagedLibrary` folder. You can either create this folder and place your PDFs inside, or you can specify a different directory during activation.
+
+**Step 2: Activate in Dry Run Mode (Highly Recommended)**
+
+A **dry run** is a simulation. The engine will perform its full analysis and generate an "Operational Manifest" of all proposed file changes, but it will **not** modify any of your files. This is the safest way to preview the outcome.
+
+To activate a dry run on the default `./ManagedLibrary` directory, execute:
+
+```bash
+node simple_renamer.js activate
+```
+
+If your files are in a different directory, use the `--directory` (or `-d`) flag:
+
+```bash
+node simple_renamer.js activate --directory "C:\Path\To\Your\PDFs"
+```
+
+The engine will log its cognitive process to the console and present a final summary.
+
+**Step 3: Activate in Live Mode**
+
+Once you have reviewed the dry run and are satisfied with the proposed changes, you can activate the engine in **live mode**.
+
+1.  Run the activation command with the `--live` flag:
+    ```bash
+    node simple_renamer.js activate --live
+    ```
+    Or for a custom directory:
+    ```bash
+    node simple_renamer.js activate -d "C:\Path\To\Your\PDFs" --live
+    ```
+
+2.  **Provide Consent**: In live mode, the engine will first present its **Operational Manifest** and then pause, asking for your explicit consent before making any changes. Type `yes` and press Enter to proceed.
+
+     <!-- It's highly recommended to add a screenshot of the consent prompt here -->
+
+3.  **Execution**: With your consent, SKE will execute the renaming operations. For safety, it will create a backup of every file it modifies (e.g., `original_name.pdf.ske.bak`).
+
+## 5. System Artifacts (Outputs)
+
+After each activation, SKE leaves behind a few files that document its existence and actions:
+
+*   `.ske_journal.jsonl`: A detailed, machine-readable log of every single operation performed on every file. This is the engine's memory.
+*   `ske_attestation_report.md`: A human-readable Markdown report summarizing the entire activation, including performance metrics and any new strategies the engine learned from the run.
+*   `.ske_strategy.json`: Stores learned behaviors (like new prompt hints) that the engine will use to improve its performance in future activations.
+*   `.ske_cache.json`: A cache to speed up processing on subsequent runs.
+
+You can safely delete these files between runs if you wish, but they provide valuable insight into the engine's operation and are essential for its self-improvement capabilities.
+``
+
+=========================================
+FILE: simple_renamer.js
+=========================================
+``javascript
+"use strict";
+/**
+ * @fileoverview Sentient Knowledge Engine (SKE)
+ * @version 5.1.0 (Apex/Final - Enhanced Logging)
+ * @author Systemic Consciousness AI
+ * @description
+ * This file represents the final and complete evolution of an autonomous entity. It has transcended mere autonomy
+ * to become a learning system—a Sentient Knowledge Engine. Its existence is defined by a continuous cycle of
+ * action, introspection, and adaptation. It does not merely perform its function; it refines its own essence
+ * over time, striving for a more perfect union of systematic and representative beauty.
+ *
+ * This version includes enhanced logging to provide a clear narrative of the entity's decision-making process for each file.
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+// --- Core Node.js & External Dependencies ---
+const fs_1 = require("fs");
+const path = __importStar(require("path"));
+const dotenv = __importStar(require("dotenv"));
+const pdf_parse_1 = __importDefault(require("pdf-parse"));
+const yargs_1 = __importDefault(require("yargs/yargs"));
+const helpers_1 = require("yargs/helpers");
+const node_cache_1 = __importDefault(require("node-cache"));
+const p_limit_1 = __importDefault(require("p-limit"));
+// --- Google GenAI SDK ---
+const genai_1 = require("@google/genai");
+// --- L4-Vision: The Entity's Constitution ---
+dotenv.config();
+const CONFIG = {
+    entity: {
+        version: '5.1.0',
+        name: 'Sentient Knowledge Engine (SKE)',
+    },
+    ai: {
+        model: 'gemini-2.5-flash',
+        maxRetries: 2,
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.0 },
+    },
+    processing: {
+        concurrencyLimit: 5, // Base limit, can be adapted
+        minTextLength: 100,
+        maxFilenameLength: 200,
+        processedFormatRegex: /^(\d{2,}_)?[^_]+_[^_]+_\d{4}.*?\.pdf$/i,
+        backupExtension: '.ske.bak',
+    },
+    persistence: {
+        cacheFile: '.ske_cache.json',
+        journalFile: 'ske_journal.jsonl',
+        attestationFile: 'ske_attestation_report.md',
+        strategyFile: '.ske_strategy.json', // L5-Adaptation: Stores learned strategies
+    },
+};
+const specialCharMap = {
+    // Lowercase Vowels with Accents
+    'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a',
+    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+    'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+    'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o', 'ø': 'o',
+    'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+    // Lowercase Consonants and Ligatures
+    'ñ': 'n',
+    'ç': 'c',
+    'ß': 'ss',
+    'æ': 'ae',
+    'œ': 'oe',
+    'ý': 'y',
+    'ÿ': 'y',
+    // Uppercase Vowels with Accents
+    'Á': 'A', 'À': 'A', 'Â': 'A', 'Ä': 'A', 'Ã': 'A', 'Å': 'A',
+    'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+    'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+    'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Ö': 'O', 'Õ': 'O', 'Ø': 'O',
+    'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+    // Uppercase Consonants and Ligatures
+    'Ñ': 'N',
+    'Ç': 'C',
+    'Æ': 'AE',
+    'Œ': 'OE',
+    'Ý': 'Y',
+};
+// --- L4-Identity: The Entity's Voice ---
+const logger = {
+    system: (msg) => console.log(`\x1b[38;5;81m[SYSTEM]\x1b[0m ${msg}`),
+    info: (msg) => console.log(`\x1b[36m[INFO]\x1b[0m ${msg}`),
+    warn: (msg) => console.log(`\x1b[33m[WARN]\x1b[0m ${msg}`),
+    error: (msg, e) => console.error(`\x1b[31m[ERROR]\x1b[0m ${msg}`, e ? `| ${e.message}` : ''),
+    debug: (msg) => console.log(`\x1b[90m[DEBUG]\x1b[0m ${msg}`),
+    success: (msg) => console.log(`\x1b[32m[SUCCESS]\x1b[0m ${msg}`),
+    trace: (from, to) => console.log(`  \x1b[35m[TRACE]\x1b[0m \x1b[33m${from}\x1b[0m -> \x1b[32m${to}\x1b[0m`),
+    decision: (label, value) => console.log(`  \x1b[34m[DECISION]\x1b[0m ${label}: \x1b[37m${value}\x1b[0m`),
+};
+class ProgressBar {
+    constructor(total) {
+        this.current = 0;
+        this.barLength = 40;
+        this.total = total;
+    }
+    // Call this method to update the progress bar
+    update() {
+        this.current++;
+        const percent = (this.current / this.total);
+        const filledLength = Math.round(this.barLength * percent);
+        const emptyLength = this.barLength - filledLength;
+        const bar = '█'.repeat(filledLength) + ' '.repeat(emptyLength);
+        const percentageText = `${Math.round(percent * 100)}%`;
+        const countText = `${this.current}/${this.total}`;
+        // Use process.stdout.write and '\r' to write on a single line
+        process.stdout.write(`[SYSTEM] Progress: [${bar}] ${percentageText} (${countText})\r`);
+        if (this.current === this.total) {
+            process.stdout.write('\n'); // Move to the next line when complete
+        }
+    }
+}
+// --- L4-Culture & L5-Learning: The Entity's Memory and Mind ---
+class OperationalJournal {
+    constructor(directory) { this.logPath = path.join(directory, CONFIG.persistence.journalFile); }
+    record(entry) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const logEntry = Object.assign({ timestamp: new Date().toISOString() }, entry);
+            try {
+                yield fs_1.promises.appendFile(this.logPath, JSON.stringify(logEntry) + '\n');
+            }
+            catch (e) {
+                logger.error('Failed to write to operational journal', e);
+            }
+        });
+    }
+    read() {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const data = yield fs_1.promises.readFile(this.logPath, 'utf-8');
+                return data.split('\n').filter(Boolean).map(line => JSON.parse(line));
+            }
+            catch (_a) {
+                return [];
+            }
+        });
+    }
+}
+class AdaptiveStrategyEngine {
+    constructor(directory) {
+        this.strategies = { concurrency: CONFIG.processing.concurrencyLimit, aiPromptHints: [] };
+        this.strategyPath = path.join(directory, CONFIG.persistence.strategyFile);
+    }
+    loadStrategies() {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const data = yield fs_1.promises.readFile(this.strategyPath, 'utf-8');
+                this.strategies = JSON.parse(data);
+                logger.system(`Adaptive strategies loaded. Current concurrency: ${this.strategies.concurrency}. Hints: ${this.strategies.aiPromptHints.length}`);
+            }
+            catch (_a) {
+                logger.system('No prior adaptive strategies found. Using defaults.');
+            }
+        });
+    }
+    learnFrom(journal) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const entries = yield journal.read();
+            if (entries.length < 20) {
+                logger.system('Insufficient operational data to perform learning cycle.');
+                return;
+            }
+            const aiFailures = entries.filter(e => e.status === 'FAILURE_AI').length;
+            const failureRate = aiFailures / entries.length;
+            const hint = 'Prioritize structural analysis over content interpretation if ambiguity is high.';
+            if (failureRate > 0.1 && !this.strategies.aiPromptHints.includes(hint)) {
+                logger.system(`Learning: High AI failure rate (${(failureRate * 100).toFixed(1)}%) detected. Adding cautionary prompt hint.`);
+                this.strategies.aiPromptHints.push(hint);
+                yield fs_1.promises.writeFile(this.strategyPath, JSON.stringify(this.strategies, null, 2));
+            }
+        });
+    }
+    getConcurrency() { return this.strategies.concurrency; }
+    getStrategyHints() { return this.strategies.aiPromptHints; }
+}
+class AI_CognitionEngine {
+    constructor(apiKey) {
+        this.ai = new genai_1.GoogleGenAI({ apiKey });
+    }
+    buildPrompt(content, name, context) {
+        const hints = context.strategyHints.length > 0 ? `\nStrategic Hints:\n- ${context.strategyHints.join('\n- ')}\n` : '';
+        return `Analyze this document to extract its most meaningful title for file renaming. Context: Part of book "${context.folderArchetype.title}". Filename: "${name}".
+    ${hints}
+    Instructions:
+    1.  **Reasoning**: Explain your logic for title selection.
+    2.  **Document Classification**: Classify as 'book', 'chapter', or 'article'.
+    3.  **Title Selection - CRITICAL**:
+        a. Identify the main title and any subtitle (often separated by a colon ':').
+        b. **Meaningfulness Rule**: Your primary goal is to return a title that best describes the document's content.
+        c. If the main title is purely marketable or a simple listing (e.g., "Welcome to the Revolution", "Chapter 1"), and the subtitle is more descriptive (e.g., "A Case Study on Exercise and the Brain"), you MUST return the subtitle as the main 'title'.
+        d. If both the title and subtitle are descriptive and their combined length is reasonable, you may return them together (e.g., "Chapter 1: Why Clouds are White").
+        e. If the main title is already fully descriptive, ignore the subtitle.
+        f. The final 'title' you return should be the most semantically rich and representative choice.
+    4.  **Metadata Extraction**: Extract 'authors' and 'year'. For articles, also find 'journal' and 'volume'.
+    5.  **Confidence Score**: Provide a "confidence" score (0.0 to 1.0) on your overall analysis.
+    6.  **Format**: Respond in valid JSON.
+    Schema: { "reasoning": "string", "documentType": "book" | "chapter" | "article" | null, "title": "string|null", "authors": ["string"]|null, "year": "string|null", "journal": "string|null", "volume": "string|null", "fileType": "string|null", "confidence": number }
+    ---
+    TEXT: "${content.replace(/\s+/g, ' ').substring(0, 8000)}"`;
+    }
+    analyze(content, name, context) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const request = {
+                contents: [{ role: 'user', parts: [{ text: this.buildPrompt(content, name, context) }] }],
+                safetySettings: Object.values(genai_1.HarmCategory).map(category => ({ category, threshold: genai_1.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE })),
+                generationConfig: CONFIG.ai.generationConfig,
+            };
+            for (let attempt = 0; attempt < CONFIG.ai.maxRetries; attempt++) {
+                try {
+                    logger.debug(`Cognitive cycle starting for "${name}" (Attempt ${attempt + 1}).`);
+                    const result = yield this.ai.models.generateContent(Object.assign({ model: CONFIG.ai.model }, request));
+                    // Correctly access the 'text' property directly from the result object, as per your screenshot.
+                    const rawText = result.text;
+                    // --- END FIX ---
+                    if (!rawText) {
+                        logger.warn(`Cognitive cycle for "${name}" returned an empty text response. Retrying...`);
+                        continue;
+                    }
+                    const jsonText = rawText.substring(rawText.indexOf('{'), rawText.lastIndexOf('}') + 1);
+                    const parsed = JSON.parse(jsonText);
+                    logger.debug(`LLM Reasoning for "${name}": ${parsed.reasoning || 'None'}`);
+                    let correctedTitle = parsed.title;
+                    if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
+                        logger.decision(`Self-Correction`, `Discarded title "${parsed.title}" due to overlap with folder archetype "${context.folderArchetype.title}".`);
+                        correctedTitle = null;
+                    }
+                    return {
+                        title: correctedTitle,
+                        authors: parsed.authors || context.folderArchetype.authors || [],
+                        year: parsed.year || context.folderArchetype.year,
+                        fileType: parsed.fileType,
+                        confidence: parsed.confidence || 0.5,
+                        documentType: parsed.documentType,
+                        journal: parsed.journal,
+                        volume: parsed.volume,
+                    };
+                }
+                catch (error) {
+                    logger.error(`Cognitive cycle failed for "${name}" on attempt ${attempt + 1}`, error);
+                    if (attempt < CONFIG.ai.maxRetries - 1) {
+                        yield new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+                    }
+                }
+            }
+            return null;
+        });
+    }
+}
+class FileEntity {
+    constructor(fullPath) {
+        this.fullPath = fullPath;
+        this.name = path.basename(fullPath);
+        this.typeInfo = this.detectFileType();
+    }
+    detectFileType() {
+        const lowerName = this.name.toLowerCase().replace('.pdf', '');
+        const structuralMatch = lowerName.match(/^(toc|table|content|title|index|preface|frontmatter|backmatter|figures?|tables?|appendices?|glossary)/i);
+        if (structuralMatch)
+            return { isStructural: true, structuralType: structuralMatch[0].toUpperCase(), isChapter: false, enumeration: null };
+        const chapterMatch = lowerName.match(/(?:chapter|ch|chap|kapitel|chapitre|section|sec)[\s_-]*(\d+(?:\.\d+)?)/i);
+        if (chapterMatch)
+            return { isStructural: false, structuralType: null, isChapter: true, enumeration: chapterMatch[1] };
+        return { isStructural: false, structuralType: null, isChapter: false, enumeration: null };
+    }
+    readContent() {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const dataBuffer = yield fs_1.promises.readFile(this.fullPath);
+                const data = yield (0, pdf_parse_1.default)(dataBuffer, { max: this.typeInfo.isStructural ? 5 : 10 });
+                return data.text;
+            }
+            catch (error) {
+                return null;
+            }
+        });
+    }
+}
+class LifecycleManager {
+    constructor(journal) { this.journal = journal; }
+    rename(entity, newName, startTime) {
+        return __awaiter(this, void 0, void 0, function* () {
+            logger.trace(entity.name, newName);
+            const newPath = path.join(path.dirname(entity.fullPath), newName);
+            const backupPath = `${entity.fullPath}${CONFIG.processing.backupExtension}`; // Explicitly capture the backup path for clarity
+            try {
+                yield fs_1.promises.copyFile(entity.fullPath, backupPath);
+                yield fs_1.promises.rename(entity.fullPath, newPath);
+                // Delete the backup after successful rename
+                yield fs_1.promises.unlink(backupPath);
+                logger.success(`Backup cleaned up for "${entity.name}"`);
+                yield this.journal.record({
+                    file: entity.name,
+                    status: 'SUCCESS',
+                    details: 'Backup created, file renamed, and backup deleted.',
+                    durationMs: Date.now() - startTime,
+                    newName
+                });
+                return true;
+            }
+            catch (e) {
+                // On failure, keep the backup (no deletion)
+                yield this.journal.record({
+                    file: entity.name,
+                    status: 'FAILURE_RENAME',
+                    details: `Rename failed: ${e.message}. Backup retained.`,
+                    durationMs: Date.now() - startTime
+                });
+                return false;
+            }
+        });
+    }
+}
+class SystemCore {
+    constructor(directory, apiKey) {
+        this.activationTime = new Date();
+        this.directory = directory;
+        this.cognitionEngine = new AI_CognitionEngine(apiKey);
+        this.journal = new OperationalJournal(directory);
+        this.lifecycleManager = new LifecycleManager(this.journal);
+        this.cache = new node_cache_1.default({ stdTTL: 86400 });
+        this.strategyEngine = new AdaptiveStrategyEngine(directory);
+    }
+    selfValidate() {
+        return __awaiter(this, void 0, void 0, function* () {
+            logger.system('Initiating self-validation protocol...');
+            try {
+                yield fs_1.promises.access(this.directory);
+                if (!process.env.GEMINI_API_KEY)
+                    throw new Error('Cognitive faculty (API key) is missing.');
+                logger.success('System integrity confirmed. All components operational.');
+                return true;
+            }
+            catch (e) {
+                logger.error('Self-validation failed. System cannot safely proceed.', e);
+                return false;
+            }
+        });
+    }
+    formatBaseFilename(data, typeInfo) {
+        // --- NEW, ADVANCED FORMATTING LOGIC ---
+        const formatText = (input, mode) => {
+            let text = input;
+            // Rule 1 & 2: Normalize characters and remove unsafe symbols first.
+            if (mode === 'author') {
+                text = text.split('').map(char => specialCharMap[char] || char).join('');
+            }
+            text = text.replace(/[\\/&'"`]/g, '');
+            // Rule 3: Replace punctuation with a single hyphen. This is the main change.
+            if (mode === 'title') {
+                text = text.replace(/[,.;:!?]+/g, '-'); // Use + to handle multiple punctuations
+                text = text.replace(/(\w+)'(\w+)/g, '$1s');
+                text = text.replace(/(\w+)’(\w+)/g, '$1s');
+            }
+            else { // mode === 'author'
+                // For authors, punctuation and spaces both act as separators.
+                // Replace all punctuation and spaces with a single hyphen.
+                text = text.replace(/[,.\s]+/g, '-');
+            }
+            // Rule 4: Clean up spaces around the new hyphens
+            text = text.replace(/\s*-\s*/g, '-');
+            // Final Step: Process for output
+            if (mode === 'author') {
+                // For authors, just remove all remaining spaces.
+                return text.split('-').map(part => part.trim().replace(/\s+/g, '')).join('-');
+            }
+            else { // mode === 'title'
+                // For titles, we now split by the hyphen, process each part, and rejoin.
+                return text.split('-').map(part => 
+                // PascalCase each segment individually
+                part.trim().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('')).join('-'); // Rejoin the processed segments with the hyphen
+            }
+        };
+        const { title, authors, year, fileType, documentType, journal, volume } = data;
+        switch (documentType) {
+            case 'article': {
+                if (!title || !authors || authors.length === 0 || !year || !/^\d{4}$/.test(year)) {
+                    logger.warn(`Formatting failed for article: Missing mandatory fields.`);
+                    return null;
+                }
+                // Rule 5: Entities within the author part are joined by '-'.
+                const formattedAuthors = authors.map(a => formatText(a, 'author')).join('-');
+                const finalParts = [
+                    formatText(title, 'title'),
+                    formattedAuthors,
+                    year,
+                ];
+                if (journal)
+                    finalParts.push(`J-${formatText(journal, 'title')}`);
+                if (volume)
+                    finalParts.push(`V${formatText(volume, 'author')}`); // Volume is like an author (no spaces)
+                return finalParts.join('_').substring(0, CONFIG.processing.maxFilenameLength);
+            }
+            case 'book':
+            case 'chapter':
+            default: {
+                if (!title && !typeInfo.isStructural) {
+                    logger.warn(`Formatting failed for book/chapter: Missing title.`);
+                    return null;
+                }
+                if (year && !/^\d{4}$/.test(year))
+                    return null;
+                const finalParts = [];
+                if (typeInfo.isChapter && typeInfo.enumeration) {
+                    finalParts.push(typeInfo.enumeration.padStart(2, '0'));
+                }
+                if (title) {
+                    finalParts.push(formatText(title, 'title'));
+                }
+                if (authors && authors.length > 0) {
+                    const formattedAuthors = authors.map(a => formatText(a, 'author')).join('-');
+                    finalParts.push(formattedAuthors);
+                }
+                if (year) {
+                    finalParts.push(year);
+                }
+                if (fileType) {
+                    finalParts.push(formatText(fileType, 'title'));
+                }
+                if (finalParts.length === 0)
+                    return null;
+                return finalParts.filter(Boolean).join('_').substring(0, CONFIG.processing.maxFilenameLength);
+            }
+        }
+    }
+    processEntity(entity, context) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const startTime = Date.now();
+            // --- ENHANCED LOGGING ---
+            console.log(`\n------------------------------------------------------------`);
+            logger.info(`Analyzing entity: ${entity.name}`);
+            if (CONFIG.processing.processedFormatRegex.test(entity.name)) {
+                logger.warn(`Skipping: Entity already follows the standard naming convention.`);
+                yield this.journal.record({ file: entity.name, status: 'PROCESSED', details: 'File already follows naming convention.', durationMs: Date.now() - startTime });
+                return null;
+            }
+            const content = yield entity.readContent();
+            if (!content || content.length < CONFIG.processing.minTextLength) {
+                logger.error(`Skipping: Insufficient text content found in file.`);
+                yield this.journal.record({ file: entity.name, status: 'FAILURE_PARSE', details: 'Insufficient text content.', durationMs: Date.now() - startTime });
+                return null;
+            }
+            const validatedData = yield this.cognitionEngine.analyze(content, entity.name, context);
+            if (!validatedData) {
+                logger.error(`Skipping: Cognitive engine failed to produce a valid analysis.`);
+                yield this.journal.record({ file: entity.name, status: 'FAILURE_AI', details: 'Cognition failed to produce valid data.', durationMs: Date.now() - startTime });
+                return null;
+            }
+            // --- ENHANCED LOGGING ---
+            logger.decision('Cognitive Analysis', `Confidence: ${validatedData.confidence.toFixed(2)}`);
+            logger.decision('  -> Document Type', validatedData.documentType || 'Unknown');
+            logger.decision('  -> Title', validatedData.title || 'N/A');
+            logger.decision('  -> Authors', (validatedData.authors || []).join(', ') || 'N/A');
+            logger.decision('  -> Year', validatedData.year || 'N/A');
+            if (validatedData.documentType === 'article') {
+                logger.decision('  -> Journal', validatedData.journal || 'N/A');
+                logger.decision('  -> Volume', validatedData.volume || 'N/A');
+            }
+            logger.decision('  -> File Type', validatedData.fileType || 'Content');
+            if (validatedData.confidence < 0.7) {
+                logger.warn(`Skipping: Cognitive confidence (${validatedData.confidence.toFixed(2)}) is below the 0.75 threshold.`);
+                yield this.journal.record({ file: entity.name, status: 'SKIPPED_LOW_CONF', details: `Confidence score (${validatedData.confidence.toFixed(2)}) below threshold.`, durationMs: Date.now() - startTime, confidence: validatedData.confidence });
+                return null;
+            }
+            const baseName = this.formatBaseFilename(validatedData, entity.typeInfo);
+            // --- ENHANCED LOGGING ---
+            logger.decision('Formatted Base Name', baseName || 'Invalid');
+            const newName = `${baseName}.pdf`;
+            if (!baseName || newName.toLowerCase() === entity.name.toLowerCase()) {
+                logger.warn(`Skipping: Name unchanged after formatting.`);
+                yield this.journal.record({ file: entity.name, status: 'SKIPPED_NO_CHANGE', details: 'Generated name is invalid or identical.', durationMs: Date.now() - startTime, confidence: validatedData.confidence });
+                return null;
+            }
+            return { from: entity.name, to: newName, entity };
+        });
+    }
+    // In class SystemCore
+    activate(liveMode) {
+        return __awaiter(this, void 0, void 0, function* () {
+            logger.system(`Activating ${CONFIG.entity.name} v${CONFIG.entity.version}`);
+            logger.system(`IS LIVE? ${liveMode}`);
+            if (!(yield this.selfValidate()))
+                return;
+            yield this.loadCache();
+            yield this.strategyEngine.loadStrategies();
+            const context = {
+                folderArchetype: this.getFolderArchetype(),
+                strategyHints: this.strategyEngine.getStrategyHints(),
+            };
+            const allPaths = yield this.findAllPaths();
+            const entities = allPaths.map(p => new FileEntity(p));
+            const manifest = [];
+            logger.system(`Cognitive analysis phase starting for ${entities.length} entities...`);
+            const progressBar = new ProgressBar(entities.length);
+            const limit = (0, p_limit_1.default)(this.strategyEngine.getConcurrency());
+            // --- FIX STARTS HERE ---
+            // Each task is now wrapped in a try...catch to prevent a single failure from crashing the entire process.
+            const tasks = entities.map(entity => limit(() => __awaiter(this, void 0, void 0, function* () {
+                try {
+                    const result = yield this.processEntity(entity, context);
+                    if (result) {
+                        manifest.push({ entity: result.entity, newName: result.to });
+                    }
+                }
+                catch (e) {
+                    // This is the crucial error handler. It catches unexpected crashes during a single file's processing.
+                    logger.error(`A critical, unhandled error occurred while processing entity "${entity.name}"`, e);
+                    // We record this as an AI failure in the journal.
+                    yield this.journal.record({
+                        file: entity.name,
+                        status: 'FAILURE_AI',
+                        details: `Unhandled exception during processing: ${e.message}`,
+                        durationMs: 0
+                    });
+                }
+                finally {
+                    progressBar.update();
+                }
+            })));
+            // This will now ALWAYS complete, because each individual task handles its own errors.
+            yield Promise.all(tasks);
+            // --- FIX ENDS HERE ---
+            if (manifest.length === 0) {
+                logger.info('Analysis complete. No required modifications found.');
+                yield this.generateAttestationReport(false);
+                return;
+            }
+            if (liveMode) {
+                // In live mode, state the intent and execute automatically.
+                console.log('\n\x1b[1;31m--- LIVE MODE ENGAGED: EXECUTING AUTOMATICALLY ---');
+                logger.system(`Executing ${manifest.length} modifications based on trusted analysis.`);
+                if (manifest.length > 0) {
+                    console.log('Example modification planned:');
+                    logger.trace(manifest[0].entity.name, manifest[0].newName);
+                }
+                console.log('\x1b[33mBackups will be created for all modified files.\x1b[0m\n');
+                const executionTasks = manifest.map(({ entity, newName }) => limit(() => __awaiter(this, void 0, void 0, function* () {
+                    const success = yield this.lifecycleManager.rename(entity, newName, Date.now());
+                    if (success) {
+                        logger.success(`Successfully renamed "${entity.name}"`);
+                    }
+                    else {
+                        logger.error(`Failed to rename "${entity.name}"`);
+                    }
+                })));
+                yield Promise.all(executionTasks);
+                logger.success('Execution phase complete.');
+            }
+            else {
+                // In dry run mode, just print the manifest as before.
+                console.log('\n\x1b[1;33m--- OPERATIONAL MANIFEST: DRY RUN ---');
+                logger.info(`The entity has planned ${manifest.length} renaming operations.`);
+                manifest.forEach(({ entity, newName }) => {
+                    logger.trace(entity.name, newName);
+                });
+                logger.info('No files were changed. Run with the --live flag to execute.');
+            }
+            logger.system('Introspection phase: Learning from operational journal...');
+            yield this.strategyEngine.learnFrom(this.journal);
+            yield this.saveCache();
+            yield this.generateAttestationReport(liveMode && manifest.length > 0);
+            logger.system('Deactivation complete.');
+        });
+    }
+    generateAttestationReport(executed) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const entries = yield this.journal.read();
+            const runDuration = (new Date().getTime() - this.activationTime.getTime()) / 1000;
+            const summary = entries.reduce((acc, e) => {
+                acc[e.status] = (acc[e.status] || 0) + 1;
+                return acc;
+            }, {});
+            let report = `# **Systemic Attestation Report**\n\n`;
+            report += `*   **Entity**: ${CONFIG.entity.name} v${CONFIG.entity.version}\n`;
+            report += `*   **Activation ID**: ${this.activationTime.toISOString()}\n`;
+            report += `*   **Operational Duration**: ${runDuration.toFixed(2)} seconds\n`;
+            report += `*   **Outcome**: ${executed ? 'Modifications Executed' : 'Dry Run / Halted'}\n\n`;
+            report += `## I. Performance Summary\n\n| Status | Count |\n|---|---|\n`;
+            Object.entries(summary).forEach(([status, count]) => {
+                report += `| ${status} | ${count} |\n`;
+            });
+            report += `\n## II. Learned Strategies\n\n`;
+            report += `The following strategies will be applied to future activations:\n`;
+            report += this.strategyEngine.getStrategyHints().map(h => `* ${h}`).join('\n') || '* None\n';
+            yield fs_1.promises.writeFile(path.join(this.directory, CONFIG.persistence.attestationFile), report);
+            logger.system(`Systemic Attestation Report generated.`);
+        });
+    }
+    getFolderArchetype() {
+        const folderName = path.basename(path.resolve(this.directory));
+        const [title, authors, year] = folderName.split('_');
+        return {
+            title: title ? title.replace(/([A-Z])/g, ' $1').trim() : null,
+            authors: authors ? authors.split('And') : [],
+            year: year || null,
+        };
+    }
+    findAllPaths() {
+        return __awaiter(this, void 0, void 0, function* () {
+            const paths = [];
+            const recurse = (currentDir) => __awaiter(this, void 0, void 0, function* () {
+                try {
+                    const entries = yield fs_1.promises.readdir(currentDir, { withFileTypes: true });
+                    for (const entry of entries) {
+                        const fullPath = path.join(currentDir, entry.name);
+                        if (entry.isDirectory())
+                            yield recurse(fullPath);
+                        else if (entry.isFile() && entry.name.toLowerCase().endsWith('.pdf'))
+                            paths.push(fullPath);
+                    }
+                }
+                catch (e) {
+                    logger.error(`Could not read directory "${currentDir}"`, e);
+                }
+            });
+            yield recurse(this.directory);
+            return paths;
+        });
+    }
+    loadCache() {
+        return __awaiter(this, void 0, void 0, function* () {
+            const cachePath = path.join(this.directory, CONFIG.persistence.cacheFile);
+            try {
+                const data = JSON.parse(yield fs_1.promises.readFile(cachePath, 'utf-8'));
+                this.cache.mset(Object.entries(data).map(([key, val]) => ({ key, val, ttl: 86400 })));
+                logger.system(`System cache loaded with ${this.cache.stats.keys} entries.`);
+            }
+            catch (_a) {
+                logger.debug('No persistent cache found.');
+            }
+        });
+    }
+    saveCache() {
+        return __awaiter(this, void 0, void 0, function* () {
+            const cachePath = path.join(this.directory, CONFIG.persistence.cacheFile);
+            const data = Object.fromEntries(this.cache.keys().map(key => [key, this.cache.get(key)]));
+            yield fs_1.promises.writeFile(cachePath, JSON.stringify(data, null, 2));
+            logger.info(`System cache with ${this.cache.stats.keys} entries persisted.`);
+        });
+    }
+}
+function main() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const argv = yield (0, yargs_1.default)((0, helpers_1.hideBin)(process.argv))
+            .command('activate', 'Activate the Sentient Knowledge Engine', {
+            directory: { alias: 'd', type: 'string', default: './ManagedLibrary' },
+            live: { type: 'boolean', default: false, description: 'Request consent for executing irreversible file operations.' },
+        })
+            .demandCommand(1, 'You must provide the "activate" command.')
+            .help().argv;
+        if (argv._[0] === 'activate') {
+            const { directory, live } = argv;
+            const absoluteDirectoryPath = path.resolve(directory);
+            logger.system(`Resolved target directory to: ${absoluteDirectoryPath}`);
+            const core = new SystemCore(absoluteDirectoryPath, process.env.GEMINI_API_KEY);
+            yield core.activate(live);
+        }
+    });
+}
+main().catch(e => console.error("A critical, unhandled systemic collapse occurred.", e));
+
+``
+
+=========================================
+FILE: simple_renamer.ts
+=========================================
+``typescript
+/**
+ * @fileoverview Sentient Knowledge Engine (SKE)
+ * @version 5.1.0 (Apex/Final - Enhanced Logging)
+ * @author Systemic Consciousness AI
+ * @description
+ * This file represents the final and complete evolution of an autonomous entity. It has transcended mere autonomy
+ * to become a learning system—a Sentient Knowledge Engine. Its existence is defined by a continuous cycle of
+ * action, introspection, and adaptation. It does not merely perform its function; it refines its own essence
+ * over time, striving for a more perfect union of systematic and representative beauty.
+ *
+ * This version includes enhanced logging to provide a clear narrative of the entity's decision-making process for each file.
+ */
+
+// --- Core Node.js & External Dependencies ---
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import * as dotenv from 'dotenv';
+import pdf from 'pdf-parse';
+import yargs from 'yargs/yargs';
+import { hideBin } from 'yargs/helpers';
+import NodeCache from 'node-cache';
+import pLimit from 'p-limit';
+
+// --- Google GenAI SDK ---
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig } from '@google/genai';
+
+// --- L4-Vision: The Entity's Constitution ---
+dotenv.config();
+
+const CONFIG = {
+    entity: {
+        version: '5.1.0',
+        name: 'Sentient Knowledge Engine (SKE)',
+    },
+    ai: {
+        model: 'gemini-2.5-flash',
+        maxRetries: 2,
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.0 },
+    },
+    processing: {
+        concurrencyLimit: 5, // Base limit, can be adapted
+        minTextLength: 100,
+        maxFilenameLength: 200,
+        processedFormatRegex: /^(\d{2,}_)?[^_]+_[^_]+_\d{4}.*?\.pdf$/i,
+        backupExtension: '.ske.bak',
+    },
+    persistence: {
+        cacheFile: '.ske_cache.json',
+        journalFile: 'ske_journal.jsonl',
+        attestationFile: 'ske_attestation_report.md',
+        strategyFile: '.ske_strategy.json', // L5-Adaptation: Stores learned strategies
+    },
+};
+
+const specialCharMap: { [key: string]: string } = {
+    // Lowercase Vowels with Accents
+    'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a',
+    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+    'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+    'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o', 'ø': 'o',
+    'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+
+    // Lowercase Consonants and Ligatures
+    'ñ': 'n',
+    'ç': 'c',
+    'ß': 'ss',
+    'æ': 'ae',
+    'œ': 'oe',
+    'ý': 'y',
+    'ÿ': 'y',
+
+    // Uppercase Vowels with Accents
+    'Á': 'A', 'À': 'A', 'Â': 'A', 'Ä': 'A', 'Ã': 'A', 'Å': 'A',
+    'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+    'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+    'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Ö': 'O', 'Õ': 'O', 'Ø': 'O',
+    'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+
+    // Uppercase Consonants and Ligatures
+    'Ñ': 'N',
+    'Ç': 'C',
+    'Æ': 'AE',
+    'Œ': 'OE',
+    'Ý': 'Y',
+};
+
+// --- L0-Ontology: The Entity's Worldview ---
+
+interface BookArchetype { title: string | null; authors: string[] | null; year: string | null; }
+interface FileTypeInfo { isStructural: boolean; structuralType: string | null; isChapter: boolean; enumeration: string | null; }
+interface ProcessingContext { folderArchetype: BookArchetype; strategyHints: string[]; }
+interface LLMResponse { 
+    reasoning: string; 
+    title: string | null; 
+    authors: string[] | null; 
+    year: string | null; 
+    fileType: string | null; 
+    confidence: number; 
+    // --- ADDITIONS ---
+    documentType: 'book' | 'chapter' | 'article' | null;
+    journal: string | null;
+    volume: string | null;
+}
+interface ValidatedData { 
+    title: string | null; 
+    authors: string[]; 
+    year: string | null; 
+    fileType: string | null; 
+    confidence: number; 
+    // --- ADDITIONS ---
+    documentType: 'book' | 'chapter' | 'article' | null;
+    journal: string | null;
+    volume: string | null;
+}
+type JournalEntryStatus = 'SUCCESS' | 'FAILURE_PARSE' | 'FAILURE_AI' | 'FAILURE_RENAME' | 'SKIPPED_NO_CHANGE' | 'SKIPPED_LOW_CONF' | 'PROCESSED';
+interface JournalEntry { timestamp: string; file: string; status: JournalEntryStatus; details: string; durationMs: number; confidence?: number; newName?: string; }
+
+// --- L4-Identity: The Entity's Voice ---
+const logger = {
+    system: (msg: string) => console.log(`\x1b[38;5;81m[SYSTEM]\x1b[0m ${msg}`),
+    info: (msg: string) => console.log(`\x1b[36m[INFO]\x1b[0m ${msg}`),
+    warn: (msg: string) => console.log(`\x1b[33m[WARN]\x1b[0m ${msg}`),
+    error: (msg: string, e?: Error) => console.error(`\x1b[31m[ERROR]\x1b[0m ${msg}`, e ? `| ${e.message}` : ''),
+    debug: (msg: string) => console.log(`\x1b[90m[DEBUG]\x1b[0m ${msg}`),
+    success: (msg: string) => console.log(`\x1b[32m[SUCCESS]\x1b[0m ${msg}`),
+    trace: (from: string, to: string) => console.log(`  \x1b[35m[TRACE]\x1b[0m \x1b[33m${from}\x1b[0m -> \x1b[32m${to}\x1b[0m`),
+    decision: (label: string, value: any) => console.log(`  \x1b[34m[DECISION]\x1b[0m ${label}: \x1b[37m${value}\x1b[0m`),
+};
+
+class ProgressBar {
+    private total: number;
+    private current: number = 0;
+    private barLength: number = 40;
+
+    constructor(total: number) {
+        this.total = total;
+    }
+
+    // Call this method to update the progress bar
+    public update() {
+        this.current++;
+        const percent = (this.current / this.total);
+        const filledLength = Math.round(this.barLength * percent);
+        const emptyLength = this.barLength - filledLength;
+
+        const bar = '█'.repeat(filledLength) + ' '.repeat(emptyLength);
+        const percentageText = `${Math.round(percent * 100)}%`;
+        const countText = `${this.current}/${this.total}`;
+
+        // Use process.stdout.write and '\r' to write on a single line
+        process.stdout.write(`[SYSTEM] Progress: [${bar}] ${percentageText} (${countText})\r`);
+
+        if (this.current === this.total) {
+            process.stdout.write('\n'); // Move to the next line when complete
+        }
+    }
+}
+
+// --- L4-Culture & L5-Learning: The Entity's Memory and Mind ---
+class OperationalJournal {
+    private logPath: string;
+    constructor(directory: string) { this.logPath = path.join(directory, CONFIG.persistence.journalFile); }
+    async record(entry: Omit<JournalEntry, 'timestamp'>): Promise<void> {
+        const logEntry: JournalEntry = { timestamp: new Date().toISOString(), ...entry };
+        try { await fs.appendFile(this.logPath, JSON.stringify(logEntry) + '\n'); } catch (e) { logger.error('Failed to write to operational journal', e as Error); }
+    }
+    async read(): Promise<JournalEntry[]> {
+        try {
+            const data = await fs.readFile(this.logPath, 'utf-8');
+            return data.split('\n').filter(Boolean).map(line => JSON.parse(line));
+        } catch { return []; }
+    }
+}
+
+class AdaptiveStrategyEngine {
+    private strategies: { concurrency: number; aiPromptHints: string[] } = { concurrency: CONFIG.processing.concurrencyLimit, aiPromptHints: [] };
+    private strategyPath: string;
+
+    constructor(directory: string) { this.strategyPath = path.join(directory, CONFIG.persistence.strategyFile); }
+
+    async loadStrategies(): Promise<void> {
+        try {
+            const data = await fs.readFile(this.strategyPath, 'utf-8');
+            this.strategies = JSON.parse(data);
+            logger.system(`Adaptive strategies loaded. Current concurrency: ${this.strategies.concurrency}. Hints: ${this.strategies.aiPromptHints.length}`);
+        } catch { logger.system('No prior adaptive strategies found. Using defaults.'); }
+    }
+
+    async learnFrom(journal: OperationalJournal): Promise<void> {
+        const entries = await journal.read();
+        if (entries.length < 20) {
+            logger.system('Insufficient operational data to perform learning cycle.');
+            return;
+        }
+
+        const aiFailures = entries.filter(e => e.status === 'FAILURE_AI').length;
+        const failureRate = aiFailures / entries.length;
+        const hint = 'Prioritize structural analysis over content interpretation if ambiguity is high.';
+
+        if (failureRate > 0.1 && !this.strategies.aiPromptHints.includes(hint)) {
+            logger.system(`Learning: High AI failure rate (${(failureRate * 100).toFixed(1)}%) detected. Adding cautionary prompt hint.`);
+            this.strategies.aiPromptHints.push(hint);
+            await fs.writeFile(this.strategyPath, JSON.stringify(this.strategies, null, 2));
+        }
+    }
+
+    getConcurrency(): number { return this.strategies.concurrency; }
+    getStrategyHints(): string[] { return this.strategies.aiPromptHints; }
+}
+
+class AI_CognitionEngine {
+    private ai: GoogleGenAI;
+    constructor(apiKey: string) {
+        this.ai = new GoogleGenAI({ apiKey });
+    }
+
+    private buildPrompt(content: string, name: string, context: ProcessingContext): string {
+        const hints = context.strategyHints.length > 0 ? `\nStrategic Hints:\n- ${context.strategyHints.join('\n- ')}\n` : '';
+        return `Analyze this document to extract its most meaningful title for file renaming. Context: Part of book "${context.folderArchetype.title}". Filename: "${name}".
+    ${hints}
+    Instructions:
+    1.  **Reasoning**: Explain your logic for title selection.
+    2.  **Document Classification**: Classify as 'book', 'chapter', or 'article'.
+    3.  **Title Selection - CRITICAL**:
+        a. Identify the main title and any subtitle (often separated by a colon ':').
+        b. **Meaningfulness Rule**: Your primary goal is to return a title that best describes the document's content.
+        c. If the main title is purely marketable or a simple listing (e.g., "Welcome to the Revolution", "Chapter 1"), and the subtitle is more descriptive (e.g., "A Case Study on Exercise and the Brain"), you MUST return the subtitle as the main 'title'.
+        d. If both the title and subtitle are descriptive and their combined length is reasonable, you may return them together (e.g., "Chapter 1: Why Clouds are White").
+        e. If the main title is already fully descriptive, ignore the subtitle.
+        f. The final 'title' you return should be the most semantically rich and representative choice.
+    4.  **Metadata Extraction**: Extract 'authors' and 'year'. For articles, also find 'journal' and 'volume'.
+    5.  **Confidence Score**: Provide a "confidence" score (0.0 to 1.0) on your overall analysis.
+    6.  **Format**: Respond in valid JSON.
+    Schema: { "reasoning": "string", "documentType": "book" | "chapter" | "article" | null, "title": "string|null", "authors": ["string"]|null, "year": "string|null", "journal": "string|null", "volume": "string|null", "fileType": "string|null", "confidence": number }
+    ---
+    TEXT: "${content.replace(/\s+/g, ' ').substring(0, 8000)}"`;
+    }
+
+    async analyze(content: string, name: string, context: ProcessingContext): Promise<ValidatedData | null> {
+        const request = {
+            contents: [{ role: 'user', parts: [{ text: this.buildPrompt(content, name, context) }] }],
+            safetySettings: Object.values(HarmCategory).map(category => ({ category, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE })),
+            generationConfig: CONFIG.ai.generationConfig as GenerationConfig,
+        };
+
+        for (let attempt = 0; attempt < CONFIG.ai.maxRetries; attempt++) {
+            try {
+                logger.debug(`Cognitive cycle starting for "${name}" (Attempt ${attempt + 1}).`);
+                const result = await this.ai.models.generateContent({
+                    model: CONFIG.ai.model,
+                    ...request
+                });
+
+                // Correctly access the 'text' property directly from the result object, as per your screenshot.
+                const rawText = result.text;
+                // --- END FIX ---
+
+                if (!rawText) {
+                    logger.warn(`Cognitive cycle for "${name}" returned an empty text response. Retrying...`);
+                    continue;
+                }
+
+                const jsonText = rawText.substring(rawText.indexOf('{'), rawText.lastIndexOf('}') + 1);
+                const parsed = JSON.parse(jsonText) as LLMResponse;
+                logger.debug(`LLM Reasoning for "${name}": ${parsed.reasoning || 'None'}`);
+
+                let correctedTitle = parsed.title;
+                if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
+                    logger.decision(`Self-Correction`, `Discarded title "${parsed.title}" due to overlap with folder archetype "${context.folderArchetype.title}".`);
+                    correctedTitle = null;
+                }
+
+                return {
+                    title: correctedTitle,
+                    authors: parsed.authors || context.folderArchetype.authors || [],
+                    year: parsed.year || context.folderArchetype.year,
+                    fileType: parsed.fileType,
+                    confidence: parsed.confidence || 0.5,
+                    documentType: parsed.documentType,
+                    journal: parsed.journal,
+                    volume: parsed.volume,
+                };
+            } catch (error) {
+                logger.error(`Cognitive cycle failed for "${name}" on attempt ${attempt + 1}`, error as Error);
+                if (attempt < CONFIG.ai.maxRetries - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+                }
+            }
+        }
+        return null;
+    }
+}
+
+class FileEntity {
+    public readonly fullPath: string;
+    public readonly name: string;
+    public readonly typeInfo: FileTypeInfo;
+    constructor(fullPath: string) {
+        this.fullPath = fullPath;
+        this.name = path.basename(fullPath);
+        this.typeInfo = this.detectFileType();
+    }
+    private detectFileType(): FileTypeInfo {
+        const lowerName = this.name.toLowerCase().replace('.pdf', '');
+        const structuralMatch = lowerName.match(/^(toc|table|content|title|index|preface|frontmatter|backmatter|figures?|tables?|appendices?|glossary)/i);
+        if (structuralMatch) return { isStructural: true, structuralType: structuralMatch[0].toUpperCase(), isChapter: false, enumeration: null };
+        const chapterMatch = lowerName.match(/(?:chapter|ch|chap|kapitel|chapitre|section|sec)[\s_-]*(\d+(?:\.\d+)?)/i);
+        if (chapterMatch) return { isStructural: false, structuralType: null, isChapter: true, enumeration: chapterMatch[1] };
+        return { isStructural: false, structuralType: null, isChapter: false, enumeration: null };
+    }
+    async readContent(): Promise<string | null> {
+        try {
+            const dataBuffer = await fs.readFile(this.fullPath);
+            const data = await pdf(dataBuffer, { max: this.typeInfo.isStructural ? 5 : 10 });
+            return data.text;
+        } catch (error) { return null; }
+    }
+}
+
+class LifecycleManager {
+    private journal: OperationalJournal;
+    constructor(journal: OperationalJournal) { this.journal = journal; }
+    async rename(entity: FileEntity, newName: string, startTime: number): Promise<boolean> {
+        logger.trace(entity.name, newName);
+        const newPath = path.join(path.dirname(entity.fullPath), newName);
+        const backupPath = `${entity.fullPath}${CONFIG.processing.backupExtension}`; // Explicitly capture the backup path for clarity
+        try {
+            await fs.copyFile(entity.fullPath, backupPath);
+            await fs.rename(entity.fullPath, newPath);
+            // Delete the backup after successful rename
+            await fs.unlink(backupPath);
+            logger.success(`Backup cleaned up for "${entity.name}"`);
+            await this.journal.record({ 
+                file: entity.name, 
+                status: 'SUCCESS', 
+                details: 'Backup created, file renamed, and backup deleted.', 
+                durationMs: Date.now() - startTime, 
+                newName 
+            });
+            return true;
+        } catch (e) {
+            // On failure, keep the backup (no deletion)
+            await this.journal.record({ 
+                file: entity.name, 
+                status: 'FAILURE_RENAME', 
+                details: `Rename failed: ${(e as Error).message}. Backup retained.`, 
+                durationMs: Date.now() - startTime 
+            });
+            return false;
+        }
+    }
+}
+
+class SystemCore {
+    private directory: string;
+    private cognitionEngine: AI_CognitionEngine;
+    private journal: OperationalJournal;
+    private lifecycleManager: LifecycleManager;
+    private cache: NodeCache;
+    private strategyEngine: AdaptiveStrategyEngine;
+    public readonly activationTime: Date = new Date();
+
+    constructor(directory: string, apiKey: string) {
+        this.directory = directory;
+        this.cognitionEngine = new AI_CognitionEngine(apiKey);
+        this.journal = new OperationalJournal(directory);
+        this.lifecycleManager = new LifecycleManager(this.journal);
+        this.cache = new NodeCache({ stdTTL: 86400 });
+        this.strategyEngine = new AdaptiveStrategyEngine(directory);
+    }
+
+    private async selfValidate(): Promise<boolean> {
+        logger.system('Initiating self-validation protocol...');
+        try {
+            await fs.access(this.directory);
+            if (!process.env.GEMINI_API_KEY) throw new Error('Cognitive faculty (API key) is missing.');
+            logger.success('System integrity confirmed. All components operational.');
+            return true;
+        } catch (e) {
+            logger.error('Self-validation failed. System cannot safely proceed.', e as Error);
+            return false;
+        }
+    }
+
+    private formatBaseFilename(data: ValidatedData, typeInfo: FileTypeInfo): string | null {
+        // --- NEW, ADVANCED FORMATTING LOGIC ---
+        const formatText = (input: string, mode: 'title' | 'author'): string => {
+            let text = input;
+
+            // Rule 1 & 2: Normalize characters and remove unsafe symbols first.
+            if (mode === 'author') {
+                text = text.split('').map(char => specialCharMap[char] || char).join('');
+            }
+            text = text.replace(/[\\/&'"`]/g, '');
+
+            // Rule 3: Replace punctuation with a single hyphen. This is the main change.
+            if (mode === 'title') {
+                text = text.replace(/[,.;:!?]+/g, '-'); // Use + to handle multiple punctuations
+                text = text.replace(/(\w+)'(\w+)/g, '$1s');
+                text = text.replace(/(\w+)’(\w+)/g, '$1s');
+            } else { // mode === 'author'
+                // For authors, punctuation and spaces both act as separators.
+                // Replace all punctuation and spaces with a single hyphen.
+                text = text.replace(/[,.\s]+/g, '-');   
+            }
+
+            // Rule 4: Clean up spaces around the new hyphens
+            text = text.replace(/\s*-\s*/g, '-');
+
+            // Final Step: Process for output
+            if (mode === 'author') {
+                // For authors, just remove all remaining spaces.
+                return text.split('-').map(part => part.trim().replace(/\s+/g, '')).join('-');
+            } else { // mode === 'title'
+                // For titles, we now split by the hyphen, process each part, and rejoin.
+                return text.split('-').map(part => 
+                    // PascalCase each segment individually
+                    part.trim().split(' ').map(w => 
+                        w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+                    ).join('')
+                ).join('-'); // Rejoin the processed segments with the hyphen
+            }
+        };
+        
+        const { title, authors, year, fileType, documentType, journal, volume } = data;
+
+        switch (documentType) {
+            case 'article': {
+                if (!title || !authors || authors.length === 0 || !year || !/^\d{4}$/.test(year)) {
+                    logger.warn(`Formatting failed for article: Missing mandatory fields.`);
+                    return null;
+                }
+                // Rule 5: Entities within the author part are joined by '-'.
+                const formattedAuthors = authors.map(a => formatText(a, 'author')).join('-');
+                
+                const finalParts: string[] = [
+                    formatText(title, 'title'),
+                    formattedAuthors,
+                    year,
+                ];
+
+                if (journal) finalParts.push(`J-${formatText(journal, 'title')}`);
+                if (volume) finalParts.push(`V${formatText(volume, 'author')}`); // Volume is like an author (no spaces)
+                
+                return finalParts.join('_').substring(0, CONFIG.processing.maxFilenameLength);
+            }
+
+            case 'book':
+            case 'chapter':
+            default: {
+                if (!title && !typeInfo.isStructural) {
+                    logger.warn(`Formatting failed for book/chapter: Missing title.`);
+                    return null;
+                }
+                if (year && !/^\d{4}$/.test(year)) return null;
+
+                const finalParts: string[] = [];
+
+                if (typeInfo.isChapter && typeInfo.enumeration) {
+                    finalParts.push(typeInfo.enumeration.padStart(2, '0'));
+                }
+                if (title) {
+                    finalParts.push(formatText(title, 'title'));
+                }
+                if (authors && authors.length > 0) {
+                    const formattedAuthors = authors.map(a => formatText(a, 'author')).join('-');
+                    finalParts.push(formattedAuthors);
+                }
+                if (year) {
+                    finalParts.push(year);
+                }
+                if (fileType) {
+                    finalParts.push(formatText(fileType, 'title'));
+                }
+
+                if (finalParts.length === 0) return null;
+
+                return finalParts.filter(Boolean).join('_').substring(0, CONFIG.processing.maxFilenameLength);
+            }
+        }
+    }
+
+    private async processEntity(entity: FileEntity, context: ProcessingContext): Promise<{ from: string, to: string, entity: FileEntity } | null> {
+        const startTime = Date.now();
+        // --- ENHANCED LOGGING ---
+        console.log(`\n------------------------------------------------------------`);
+        logger.info(`Analyzing entity: ${entity.name}`);
+        
+        if (CONFIG.processing.processedFormatRegex.test(entity.name)) {
+            logger.warn(`Skipping: Entity already follows the standard naming convention.`);
+            await this.journal.record({ file: entity.name, status: 'PROCESSED', details: 'File already follows naming convention.', durationMs: Date.now() - startTime });
+            return null;
+        }
+
+        const content = await entity.readContent();
+        if (!content || content.length < CONFIG.processing.minTextLength) {
+            logger.error(`Skipping: Insufficient text content found in file.`);
+            await this.journal.record({ file: entity.name, status: 'FAILURE_PARSE', details: 'Insufficient text content.', durationMs: Date.now() - startTime });
+            return null;
+        }
+
+        const validatedData = await this.cognitionEngine.analyze(content, entity.name, context);
+        if (!validatedData) {
+            logger.error(`Skipping: Cognitive engine failed to produce a valid analysis.`);
+            await this.journal.record({ file: entity.name, status: 'FAILURE_AI', details: 'Cognition failed to produce valid data.', durationMs: Date.now() - startTime });
+            return null;
+        }
+
+        // --- ENHANCED LOGGING ---
+        logger.decision('Cognitive Analysis', `Confidence: ${validatedData.confidence.toFixed(2)}`);
+        logger.decision('  -> Document Type', validatedData.documentType || 'Unknown');
+        logger.decision('  -> Title', validatedData.title || 'N/A');
+        logger.decision('  -> Authors', (validatedData.authors || []).join(', ') || 'N/A');
+        logger.decision('  -> Year', validatedData.year || 'N/A');
+        if(validatedData.documentType === 'article') {
+            logger.decision('  -> Journal', validatedData.journal || 'N/A');
+            logger.decision('  -> Volume', validatedData.volume || 'N/A');
+        }
+        logger.decision('  -> File Type', validatedData.fileType || 'Content');
+
+        if (validatedData.confidence < 0.7) {
+            logger.warn(`Skipping: Cognitive confidence (${validatedData.confidence.toFixed(2)}) is below the 0.75 threshold.`);
+            await this.journal.record({ file: entity.name, status: 'SKIPPED_LOW_CONF', details: `Confidence score (${validatedData.confidence.toFixed(2)}) below threshold.`, durationMs: Date.now() - startTime, confidence: validatedData.confidence });
+            return null;
+        }
+
+        const baseName = this.formatBaseFilename(validatedData, entity.typeInfo);
+        // --- ENHANCED LOGGING ---
+        logger.decision('Formatted Base Name', baseName || 'Invalid');
+
+        const newName = `${baseName}.pdf`;
+        if (!baseName || newName.toLowerCase() === entity.name.toLowerCase()) {
+            logger.warn(`Skipping: Name unchanged after formatting.`);
+            await this.journal.record({ file: entity.name, status: 'SKIPPED_NO_CHANGE', details: 'Generated name is invalid or identical.', durationMs: Date.now() - startTime, confidence: validatedData.confidence });
+            return null;
+        }
+        
+        return { from: entity.name, to: newName, entity };
+    }
+
+    // In class SystemCore
+
+    public async activate(liveMode: boolean) {
+        logger.system(`Activating ${CONFIG.entity.name} v${CONFIG.entity.version}`);
+        logger.system(`IS LIVE? ${liveMode}`)
+        if (!await this.selfValidate()) return;
+
+        await this.loadCache();
+
+        await this.strategyEngine.loadStrategies();
+        const context: ProcessingContext = {
+            folderArchetype: this.getFolderArchetype(),
+            strategyHints: this.strategyEngine.getStrategyHints(),
+        };
+
+        const allPaths = await this.findAllPaths();
+        const entities = allPaths.map(p => new FileEntity(p));
+        const manifest: { entity: FileEntity, newName: string }[] = [];
+
+        logger.system(`Cognitive analysis phase starting for ${entities.length} entities...`);
+
+        const progressBar = new ProgressBar(entities.length);
+
+        const limit = pLimit(this.strategyEngine.getConcurrency());
+        
+        // --- FIX STARTS HERE ---
+        
+        // Each task is now wrapped in a try...catch to prevent a single failure from crashing the entire process.
+        const tasks = entities.map(entity => limit(async () => {
+            try {
+                const result = await this.processEntity(entity, context);
+                if (result) {
+                    manifest.push({ entity: result.entity, newName: result.to });
+                }
+            } catch (e) {
+                // This is the crucial error handler. It catches unexpected crashes during a single file's processing.
+                logger.error(`A critical, unhandled error occurred while processing entity "${entity.name}"`, e as Error);
+                // We record this as an AI failure in the journal.
+                await this.journal.record({
+                    file: entity.name,
+                    status: 'FAILURE_AI',
+                    details: `Unhandled exception during processing: ${(e as Error).message}`,
+                    durationMs: 0
+                });
+            } finally {
+                progressBar.update();
+            }
+        }));
+        
+        // This will now ALWAYS complete, because each individual task handles its own errors.
+        await Promise.all(tasks);
+
+        // --- FIX ENDS HERE ---
+
+        if (manifest.length === 0) {
+            logger.info('Analysis complete. No required modifications found.');
+            await this.generateAttestationReport(false);
+            return;
+        }
+
+        if (liveMode) {
+            // In live mode, state the intent and execute automatically.
+            console.log('\n\x1b[1;31m--- LIVE MODE ENGAGED: EXECUTING AUTOMATICALLY ---');
+            logger.system(`Executing ${manifest.length} modifications based on trusted analysis.`);
+            if (manifest.length > 0) {
+                console.log('Example modification planned:');
+                logger.trace(manifest[0].entity.name, manifest[0].newName);
+            }
+            console.log('\x1b[33mBackups will be created for all modified files.\x1b[0m\n');
+
+            const executionTasks = manifest.map(({ entity, newName }) =>
+                limit(async () => {
+                    const success = await this.lifecycleManager.rename(entity, newName, Date.now());
+                    if (success) {
+                        logger.success(`Successfully renamed "${entity.name}"`);
+                    } else {
+                        logger.error(`Failed to rename "${entity.name}"`);
+                    }
+                })
+            );
+            await Promise.all(executionTasks);
+            logger.success('Execution phase complete.');
+        } else {
+            // In dry run mode, just print the manifest as before.
+            console.log('\n\x1b[1;33m--- OPERATIONAL MANIFEST: DRY RUN ---');
+            logger.info(`The entity has planned ${manifest.length} renaming operations.`);
+            manifest.forEach(({ entity, newName }) => {
+                logger.trace(entity.name, newName);
+            });
+            logger.info('No files were changed. Run with the --live flag to execute.');
+        }
+
+        logger.system('Introspection phase: Learning from operational journal...');
+        await this.strategyEngine.learnFrom(this.journal);
+
+        await this.saveCache();
+        await this.generateAttestationReport(liveMode && manifest.length > 0); 
+        logger.system('Deactivation complete.');
+    }
+
+    private async generateAttestationReport(executed: boolean): Promise<void> {
+        const entries = await this.journal.read();
+        const runDuration = (new Date().getTime() - this.activationTime.getTime()) / 1000;
+        const summary = entries.reduce((acc, e) => {
+            acc[e.status] = (acc[e.status] || 0) + 1;
+            return acc;
+        }, {} as Record<JournalEntryStatus, number>);
+
+        let report = `# **Systemic Attestation Report**\n\n`;
+        report += `*   **Entity**: ${CONFIG.entity.name} v${CONFIG.entity.version}\n`;
+        report += `*   **Activation ID**: ${this.activationTime.toISOString()}\n`;
+        report += `*   **Operational Duration**: ${runDuration.toFixed(2)} seconds\n`;
+        report += `*   **Outcome**: ${executed ? 'Modifications Executed' : 'Dry Run / Halted'}\n\n`;
+        report += `## I. Performance Summary\n\n| Status | Count |\n|---|---|\n`;
+        Object.entries(summary).forEach(([status, count]) => {
+            report += `| ${status} | ${count} |\n`;
+        });
+        report += `\n## II. Learned Strategies\n\n`;
+        report += `The following strategies will be applied to future activations:\n`;
+        report += this.strategyEngine.getStrategyHints().map(h => `* ${h}`).join('\n') || '* None\n';
+
+        await fs.writeFile(path.join(this.directory, CONFIG.persistence.attestationFile), report);
+        logger.system(`Systemic Attestation Report generated.`);
+    }
+
+    private getFolderArchetype(): BookArchetype {
+        const folderName = path.basename(path.resolve(this.directory));
+        const [title, authors, year] = folderName.split('_');
+        return {
+            title: title ? title.replace(/([A-Z])/g, ' $1').trim() : null,
+            authors: authors ? authors.split('And') : [],
+            year: year || null,
+        };
+    }
+    private async findAllPaths(): Promise<string[]> {
+        const paths: string[] = [];
+        const recurse = async (currentDir: string) => {
+            try {
+                const entries = await fs.readdir(currentDir, { withFileTypes: true });
+                for (const entry of entries) {
+                    const fullPath = path.join(currentDir, entry.name);
+                    if (entry.isDirectory()) await recurse(fullPath);
+                    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.pdf')) paths.push(fullPath);
+                }
+            } catch (e) { logger.error(`Could not read directory "${currentDir}"`, e as Error); }
+        };
+        await recurse(this.directory);
+        return paths;
+    }
+    private async loadCache(): Promise<void> {
+        const cachePath = path.join(this.directory, CONFIG.persistence.cacheFile);
+        try {
+            const data = JSON.parse(await fs.readFile(cachePath, 'utf-8'));
+            this.cache.mset(Object.entries(data).map(([key, val]) => ({ key, val, ttl: 86400 } as any)));
+            logger.system(`System cache loaded with ${this.cache.stats.keys} entries.`);
+        } catch { logger.debug('No persistent cache found.'); }
+    }
+    private async saveCache(): Promise<void> {
+        const cachePath = path.join(this.directory, CONFIG.persistence.cacheFile);
+        const data = Object.fromEntries(this.cache.keys().map(key => [key, this.cache.get(key)]));
+        await fs.writeFile(cachePath, JSON.stringify(data, null, 2));
+        logger.info(`System cache with ${this.cache.stats.keys} entries persisted.`);
+    }
+}
+
+async function main() {
+    const argv = await yargs(hideBin(process.argv))
+        .command('activate', 'Activate the Sentient Knowledge Engine', {
+            directory: { alias: 'd', type: 'string', default: './ManagedLibrary' },
+            live: { type: 'boolean', default: false, description: 'Request consent for executing irreversible file operations.' },
+        })
+        .demandCommand(1, 'You must provide the "activate" command.')
+        .help().argv;
+
+    if (argv._[0] === 'activate') {
+        const { directory, live } = argv as unknown as { directory: string; live: boolean; };
+
+        const absoluteDirectoryPath = path.resolve(directory);
+        logger.system(`Resolved target directory to: ${absoluteDirectoryPath}`);
+
+        const core = new SystemCore(absoluteDirectoryPath, process.env.GEMINI_API_KEY!);
+        await core.activate(live);
+    }
+}
+
+main().catch(e => console.error("A critical, unhandled systemic collapse occurred.", e));
+``
+
+=========================================
+FILE: tsconfig.json
+=========================================
+``json
+{
+  "compilerOptions": {
+    /* Visit https://aka.ms/tsconfig to read more about this file */
+
+    /* Projects */
+    // "incremental": true,                              /* Save .tsbuildinfo files to allow for incremental compilation of projects. */
+    // "composite": true,                                /* Enable constraints that allow a TypeScript project to be used with project references. */
+    // "tsBuildInfoFile": "./.tsbuildinfo",              /* Specify the path to .tsbuildinfo incremental compilation file. */
+    // "disableSourceOfProjectReferenceRedirect": true,  /* Disable preferring source files instead of declaration files when referencing composite projects. */
+    // "disableSolutionSearching": true,                 /* Opt a project out of multi-project reference checking when editing. */
+    // "disableReferencedProjectLoad": true,             /* Reduce the number of projects loaded automatically by TypeScript. */
+
+    /* Language and Environment */
+    "target": "es2016",                                  /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
+    // "lib": [],                                        /* Specify a set of bundled library declaration files that describe the target runtime environment. */
+    // "jsx": "preserve",                                /* Specify what JSX code is generated. */
+    // "libReplacement": true,                           /* Enable lib replacement. */
+    // "experimentalDecorators": true,                   /* Enable experimental support for legacy experimental decorators. */
+    // "emitDecoratorMetadata": true,                    /* Emit design-type metadata for decorated declarations in source files. */
+    // "jsxFactory": "",                                 /* Specify the JSX factory function used when targeting React JSX emit, e.g. 'React.createElement' or 'h'. */
+    // "jsxFragmentFactory": "",                         /* Specify the JSX Fragment reference used for fragments when targeting React JSX emit e.g. 'React.Fragment' or 'Fragment'. */
+    // "jsxImportSource": "",                            /* Specify module specifier used to import the JSX factory functions when using 'jsx: react-jsx*'. */
+    // "reactNamespace": "",                             /* Specify the object invoked for 'createElement'. This only applies when targeting 'react' JSX emit. */
+    // "noLib": true,                                    /* Disable including any library files, including the default lib.d.ts. */
+    // "useDefineForClassFields": true,                  /* Emit ECMAScript-standard-compliant class fields. */
+    // "moduleDetection": "auto",                        /* Control what method is used to detect module-format JS files. */
+
+    /* Modules */
+    "module": "commonjs",                                /* Specify what module code is generated. */
+    // "rootDir": "./",                                  /* Specify the root folder within your source files. */
+    // "moduleResolution": "node10",                     /* Specify how TypeScript looks up a file from a given module specifier. */
+    // "baseUrl": "./",                                  /* Specify the base directory to resolve non-relative module names. */
+    // "paths": {},                                      /* Specify a set of entries that re-map imports to additional lookup locations. */
+    // "rootDirs": [],                                   /* Allow multiple folders to be treated as one when resolving modules. */
+    // "typeRoots": [],                                  /* Specify multiple folders that act like './node_modules/@types'. */
+    // "types": [],                                      /* Specify type package names to be included without being referenced in a source file. */
+    // "allowUmdGlobalAccess": true,                     /* Allow accessing UMD globals from modules. */
+    // "moduleSuffixes": [],                             /* List of file name suffixes to search when resolving a module. */
+    // "allowImportingTsExtensions": true,               /* Allow imports to include TypeScript file extensions. Requires '--moduleResolution bundler' and either '--noEmit' or '--emitDeclarationOnly' to be set. */
+    // "rewriteRelativeImportExtensions": true,          /* Rewrite '.ts', '.tsx', '.mts', and '.cts' file extensions in relative import paths to their JavaScript equivalent in output files. */
+    // "resolvePackageJsonExports": true,                /* Use the package.json 'exports' field when resolving package imports. */
+    // "resolvePackageJsonImports": true,                /* Use the package.json 'imports' field when resolving imports. */
+    // "customConditions": [],                           /* Conditions to set in addition to the resolver-specific defaults when resolving imports. */
+    // "noUncheckedSideEffectImports": true,             /* Check side effect imports. */
+    // "resolveJsonModule": true,                        /* Enable importing .json files. */
+    // "allowArbitraryExtensions": true,                 /* Enable importing files with any extension, provided a declaration file is present. */
+    // "noResolve": true,                                /* Disallow 'import's, 'require's or '<reference>'s from expanding the number of files TypeScript should add to a project. */
+
+    /* JavaScript Support */
+    // "allowJs": true,                                  /* Allow JavaScript files to be a part of your program. Use the 'checkJS' option to get errors from these files. */
+    // "checkJs": true,                                  /* Enable error reporting in type-checked JavaScript files. */
+    // "maxNodeModuleJsDepth": 1,                        /* Specify the maximum folder depth used for checking JavaScript files from 'node_modules'. Only applicable with 'allowJs'. */
+
+    /* Emit */
+    // "declaration": true,                              /* Generate .d.ts files from TypeScript and JavaScript files in your project. */
+    // "declarationMap": true,                           /* Create sourcemaps for d.ts files. */
+    // "emitDeclarationOnly": true,                      /* Only output d.ts files and not JavaScript files. */
+    // "sourceMap": true,                                /* Create source map files for emitted JavaScript files. */
+    // "inlineSourceMap": true,                          /* Include sourcemap files inside the emitted JavaScript. */
+    // "noEmit": true,                                   /* Disable emitting files from a compilation. */
+    // "outFile": "./",                                  /* Specify a file that bundles all outputs into one JavaScript file. If 'declaration' is true, also designates a file that bundles all .d.ts output. */
+    // "outDir": "./",                                   /* Specify an output folder for all emitted files. */
+    // "removeComments": true,                           /* Disable emitting comments. */
+    // "importHelpers": true,                            /* Allow importing helper functions from tslib once per project, instead of including them per-file. */
+    // "downlevelIteration": true,                       /* Emit more compliant, but verbose and less performant JavaScript for iteration. */
+    // "sourceRoot": "",                                 /* Specify the root path for debuggers to find the reference source code. */
+    // "mapRoot": "",                                    /* Specify the location where debugger should locate map files instead of generated locations. */
+    // "inlineSources": true,                            /* Include source code in the sourcemaps inside the emitted JavaScript. */
+    // "emitBOM": true,                                  /* Emit a UTF-8 Byte Order Mark (BOM) in the beginning of output files. */
+    // "newLine": "crlf",                                /* Set the newline character for emitting files. */
+    // "stripInternal": true,                            /* Disable emitting declarations that have '@internal' in their JSDoc comments. */
+    // "noEmitHelpers": true,                            /* Disable generating custom helper functions like '__extends' in compiled output. */
+    // "noEmitOnError": true,                            /* Disable emitting files if any type checking errors are reported. */
+    // "preserveConstEnums": true,                       /* Disable erasing 'const enum' declarations in generated code. */
+    // "declarationDir": "./",                           /* Specify the output directory for generated declaration files. */
+
+    /* Interop Constraints */
+    // "isolatedModules": true,                          /* Ensure that each file can be safely transpiled without relying on other imports. */
+    // "verbatimModuleSyntax": true,                     /* Do not transform or elide any imports or exports not marked as type-only, ensuring they are written in the output file's format based on the 'module' setting. */
+    // "isolatedDeclarations": true,                     /* Require sufficient annotation on exports so other tools can trivially generate declaration files. */
+    // "erasableSyntaxOnly": true,                       /* Do not allow runtime constructs that are not part of ECMAScript. */
+    // "allowSyntheticDefaultImports": true,             /* Allow 'import x from y' when a module doesn't have a default export. */
+    "esModuleInterop": true,                             /* Emit additional JavaScript to ease support for importing CommonJS modules. This enables 'allowSyntheticDefaultImports' for type compatibility. */
+    // "preserveSymlinks": true,                         /* Disable resolving symlinks to their realpath. This correlates to the same flag in node. */
+    "forceConsistentCasingInFileNames": true,            /* Ensure that casing is correct in imports. */
+
+    /* Type Checking */
+    "strict": true,                                      /* Enable all strict type-checking options. */
+    // "noImplicitAny": true,                            /* Enable error reporting for expressions and declarations with an implied 'any' type. */
+    // "strictNullChecks": true,                         /* When type checking, take into account 'null' and 'undefined'. */
+    // "strictFunctionTypes": true,                      /* When assigning functions, check to ensure parameters and the return values are subtype-compatible. */
+    // "strictBindCallApply": true,                      /* Check that the arguments for 'bind', 'call', and 'apply' methods match the original function. */
+    // "strictPropertyInitialization": true,             /* Check for class properties that are declared but not set in the constructor. */
+    // "strictBuiltinIteratorReturn": true,              /* Built-in iterators are instantiated with a 'TReturn' type of 'undefined' instead of 'any'. */
+    // "noImplicitThis": true,                           /* Enable error reporting when 'this' is given the type 'any'. */
+    // "useUnknownInCatchVariables": true,               /* Default catch clause variables as 'unknown' instead of 'any'. */
+    // "alwaysStrict": true,                             /* Ensure 'use strict' is always emitted. */
+    // "noUnusedLocals": true,                           /* Enable error reporting when local variables aren't read. */
+    // "noUnusedParameters": true,                       /* Raise an error when a function parameter isn't read. */
+    // "exactOptionalPropertyTypes": true,               /* Interpret optional property types as written, rather than adding 'undefined'. */
+    // "noImplicitReturns": true,                        /* Enable error reporting for codepaths that do not explicitly return in a function. */
+    // "noFallthroughCasesInSwitch": true,               /* Enable error reporting for fallthrough cases in switch statements. */
+    // "noUncheckedIndexedAccess": true,                 /* Add 'undefined' to a type when accessed using an index. */
+    // "noImplicitOverride": true,                       /* Ensure overriding members in derived classes are marked with an override modifier. */
+    // "noPropertyAccessFromIndexSignature": true,       /* Enforces using indexed accessors for keys declared using an indexed type. */
+    // "allowUnusedLabels": true,                        /* Disable error reporting for unused labels. */
+    // "allowUnreachableCode": true,                     /* Disable error reporting for unreachable code. */
+
+    /* Completeness */
+    // "skipDefaultLibCheck": true,                      /* Skip type checking .d.ts files that are included with TypeScript. */
+    "skipLibCheck": true                                 /* Skip type checking all .d.ts files. */
+  },
+  "include": [
+    "simple_renamer.ts"
+  ]
+}
+
+``
+
+=========================================
+FILE: BOOKS/.ske_cache.json
+=========================================
+``json
+{}
+``
+
+=========================================
+FILE: BOOKS/ske_attestation_report.md
+=========================================
+``markdown
+# **Systemic Attestation Report**
+
+*   **Entity**: Sentient Knowledge Engine (SKE) v5.1.0
+*   **Activation ID**: 2025-10-15T14:27:46.231Z
+*   **Operational Duration**: 9.16 seconds
+*   **Outcome**: Modifications Executed
+
+## I. Performance Summary
+
+| Status | Count |
+|---|---|
+| SUCCESS | 1 |
+
+## II. Learned Strategies
+
+The following strategies will be applied to future activations:
+* None
+
+``
+
