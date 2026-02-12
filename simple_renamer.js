@@ -56,7 +56,6 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
-var _a, _b, _c, _d;
 Object.defineProperty(exports, "__esModule", { value: true });
 // --- Core Node.js & External Dependencies ---
 const fs_1 = require("fs");
@@ -72,7 +71,10 @@ const genai_1 = require("@google/genai");
 // At top of file
 dotenv.config();
 // Then in AI_CognitionEngine
-const API_KEYS = ((_b = (_a = process.env.GEMINI_API_KEYS) === null || _a === void 0 ? void 0 : _a.split(',')) === null || _b === void 0 ? void 0 : _b.map(k => k.trim())) || [];
+const API_KEYS = Object.keys(process.env)
+    .filter(key => key.startsWith('GEMINI_API_KEY'))
+    .map(key => { var _a; return (_a = process.env[key]) === null || _a === void 0 ? void 0 : _a.trim(); })
+    .filter(Boolean);
 const CONFIG = {
     entity: {
         version: '5.2.0',
@@ -103,9 +105,13 @@ const CONFIG = {
         strategyFile: '.ske_strategy.json'
     },
     retry: {
-        delayMinutes: 15, // General system retry
-        keyExhaustionBackoffBase: 60, // Base seconds to wait when ALL keys are 429'd
-    },
+        delayMinutes: 15, // Kept for other parts of your script
+        keyExhaustionBackoffBase: 60,
+        // Python-equivalent backoff settings
+        INITIAL_BACKOFF_SEC: 120,
+        MAX_BACKOFF_SEC: 600,
+        JITTER_RANGE: 0.15,
+    }
 };
 const specialCharMap = {
     // Lowercase Vowels with Accents
@@ -233,8 +239,12 @@ class AdaptiveStrategyEngine {
 }
 class AI_CognitionEngine {
     constructor() {
-        // No longer requires apiKey in constructor
-        logger.system(`Cognition Engine initialized with pool of ${AI_CognitionEngine.API_KEYS.length} keys.`);
+        if (AI_CognitionEngine.API_KEYS.length === 0) {
+            logger.error("No valid Gemini API keys found in environment variables (GEMINI_API_KEY_N, _A1, etc.).");
+        }
+        else {
+            logger.system(`Cognition Engine initialized with pool of ${AI_CognitionEngine.API_KEYS.length} keys.`);
+        }
     }
     buildPrompt(content, name, context) {
         const hints = context.strategyHints.length > 0 ? `\nStrategic Hints:\n- ${context.strategyHints.join('\n- ')}\n` : '';
@@ -257,7 +267,6 @@ class AI_CognitionEngine {
         ---
         TEXT: "${content.replace(/\s+/g, ' ').substring(0, 8000)}"`;
     }
-    // --- MODIFIED ANALYZE METHOD ---
     analyze(content, name, context) {
         return __awaiter(this, void 0, void 0, function* () {
             const baseRequest = {
@@ -265,20 +274,26 @@ class AI_CognitionEngine {
                 safetySettings: Object.values(genai_1.HarmCategory).map(category => ({ category, threshold: genai_1.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE })),
                 generationConfig: CONFIG.ai.generationConfig,
             };
-            // --- Outer Loop: Iterate through Models ---
+            // --- Outer Loop: Iterate through Models (Fallback Strategy) ---
             for (const model of CONFIG.ai.models) {
-                logger.system(`Attempting cognitive analysis with model "${model}" for "${name}"`);
-                let fullKeyCycleCount = 0;
-                const MAX_CYCLES = 10; // How many times we loop through ALL keys before giving up on this model
-                // Record where we started to detect if we wrapped around
-                const cycleStartIndex = AI_CognitionEngine.currentKeyIndex;
-                while (fullKeyCycleCount < MAX_CYCLES) {
-                    // 1. Select Key
+                let cycleCount = 0;
+                // Track where we started to detect a full loop through keys
+                let startIndexForCycle = AI_CognitionEngine.currentKeyIndex;
+                // --- Inner Loop: Rotate through Keys ---
+                while (true) {
+                    cycleCount++;
                     const apiKey = AI_CognitionEngine.API_KEYS[AI_CognitionEngine.currentKeyIndex];
                     const keyIndexDisplay = AI_CognitionEngine.currentKeyIndex + 1;
+                    // Safety check: if keys empty
+                    if (!apiKey) {
+                        logger.error(`API Key at index ${AI_CognitionEngine.currentKeyIndex} is invalid.`);
+                        AI_CognitionEngine.currentKeyIndex = (AI_CognitionEngine.currentKeyIndex + 1) % AI_CognitionEngine.API_KEYS.length;
+                        if (AI_CognitionEngine.currentKeyIndex === startIndexForCycle)
+                            break;
+                        continue;
+                    }
                     try {
-                        logger.debug(`Cognitive cycle (model: ${model}, key: ${keyIndexDisplay}/${AI_CognitionEngine.API_KEYS.length}) for "${name}"`);
-                        // 2. Initialize Client with specific key for this request
+                        // logger.debug(`Attempt ${cycleCount} | Key ${keyIndexDisplay}/${AI_CognitionEngine.API_KEYS.length} | Model ${model}`);
                         const client = new genai_1.GoogleGenAI({ apiKey });
                         const result = yield client.models.generateContent(Object.assign({ model }, baseRequest));
                         const rawText = result.text;
@@ -286,15 +301,16 @@ class AI_CognitionEngine {
                             throw new Error('Empty text response from API');
                         const jsonText = rawText.substring(rawText.indexOf('{'), rawText.lastIndexOf('}') + 1);
                         const parsed = JSON.parse(jsonText);
-                        logger.debug(`LLM Reasoning (model: ${model}) for "${name}": ${parsed.reasoning || 'None'}`);
+                        // SUCCESS LOGIC (Python: sticky failover)
+                        // We stay on this key for the next request (don't increment index).
+                        // We update startIndexForCycle to mark this as the new "start" for future cycles.
+                        startIndexForCycle = AI_CognitionEngine.currentKeyIndex;
+                        logger.success(`Success for "${name}" using model "${model}" (Key ${keyIndexDisplay})`);
+                        // Data validation
                         let correctedTitle = parsed.title;
                         if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
-                            logger.decision(`Self-Correction`, `Discarded title "${parsed.title}" due to overlap with folder archetype.`);
                             correctedTitle = null;
                         }
-                        // SUCCESS: Increment key index for next file (Load Balancing)
-                        AI_CognitionEngine.currentKeyIndex = (AI_CognitionEngine.currentKeyIndex + 1) % AI_CognitionEngine.API_KEYS.length;
-                        logger.success(`Successful analysis for "${name}" using model "${model}" (Key ${keyIndexDisplay})`);
                         return {
                             title: correctedTitle,
                             authors: parsed.authors || context.folderArchetype.authors || [],
@@ -307,44 +323,62 @@ class AI_CognitionEngine {
                         };
                     }
                     catch (error) {
-                        // --- ERROR HANDLING ---
-                        const isRateLimit = (error === null || error === void 0 ? void 0 : error.code) === 429 || (error === null || error === void 0 ? void 0 : error.status) === 'RESOURCE_EXHAUSTED';
-                        if (isRateLimit) {
-                            logger.warn(`Rate limit hit on Key ${keyIndexDisplay}. Switching to next key.`);
-                            // Move to next key immediately
+                        const errStr = (error.message || error.toString()).toLowerCase();
+                        // Python: Detect specific quota vs rate limit
+                        const isQuotaError = errStr.includes('quota') || errStr.includes('resourceexhausted') || (error === null || error === void 0 ? void 0 : error.status) === 'RESOURCE_EXHAUSTED';
+                        const isTransient = isQuotaError || errStr.includes('429') || errStr.includes('rate limit') || errStr.includes('503') || errStr.includes('unavailable');
+                        if (isTransient) {
+                            logger.warn(`Transient ${isQuotaError ? 'quota' : 'rate'} error on Key ${keyIndexDisplay} -> Switching to next key.`);
+                            // Rotate key
                             AI_CognitionEngine.currentKeyIndex = (AI_CognitionEngine.currentKeyIndex + 1) % AI_CognitionEngine.API_KEYS.length;
-                            // Check if we have wrapped around (tried every key)
-                            if (AI_CognitionEngine.currentKeyIndex === cycleStartIndex) {
-                                // We have exhausted all keys. Wait before restarting cycle.
-                                fullKeyCycleCount++;
-                                const waitTime = Math.min(CONFIG.retry.keyExhaustionBackoffBase * Math.pow(2, fullKeyCycleCount), 600);
-                                logger.warn(`All ${AI_CognitionEngine.API_KEYS.length} keys exhausted for model "${model}". Waiting ${waitTime}s...`);
-                                yield new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+                            // Check if we completed a full cycle (wrapped around to start)
+                            if (AI_CognitionEngine.currentKeyIndex === startIndexForCycle) {
+                                // Logic: If it was a Quota Error, we should try the NEXT MODEL.
+                                // If it was a generic Rate Limit/503, we should BACKOFF.
+                                if (isQuotaError) {
+                                    logger.warn(`Quota exhausted on all keys for model "${model}". Switching to next model.`);
+                                    // Reset key index for the new model (optional but clean)
+                                    AI_CognitionEngine.currentKeyIndex = 0;
+                                    // Break inner loop to proceed to next model in outer loop
+                                    break;
+                                }
+                                else {
+                                    // Generic Rate Limit: Backoff and retry same model
+                                    logger.warn(`All keys exhausted for model "${model}". Applying backoff...`);
+                                    // Python: Exponential backoff with jitter
+                                    const backoffBase = Math.min(CONFIG.retry.INITIAL_BACKOFF_SEC * Math.pow(2, cycleCount - 1), CONFIG.retry.MAX_BACKOFF_SEC);
+                                    const jitter = backoffBase * (1 + (Math.random() * 2 - 1) * CONFIG.retry.JITTER_RANGE);
+                                    logger.system(`Backoff timer: ${jitter.toFixed(0)} seconds.`);
+                                    yield new Promise(resolve => setTimeout(resolve, jitter * 1000));
+                                    // After backoff, we continue the while loop (retry same keys)
+                                    startIndexForCycle = AI_CognitionEngine.currentKeyIndex; // Reset cycle start
+                                }
                             }
-                            else {
-                                // Continue loop to try next key immediately
-                                continue;
-                            }
+                            // If not a full cycle, just continue loop (try next key immediately)
                         }
                         else {
-                            // Non-retryable error (e.g. 400, 401)
-                            logger.error(`Non-retryable error with Key ${keyIndexDisplay}.`, error);
-                            // Break the while loop to try the next MODEL
+                            // Non-transient error (e.g. 400 Bad Request, Safety Filter)
+                            logger.error(`Permanent error with model "${model}": ${error.message}`);
+                            // Break inner loop to try next model
                             break;
                         }
                     }
                 }
-                logger.warn(`Model "${model}" failed after exhausting all key cycles. Trying next model.`);
             }
-            // All models and keys failed
-            logger.error(`All configured models and keys failed for "${name}". Skipping this file.`);
+            logger.error(`All models and keys failed for "${name}".`);
             return null;
         });
     }
 }
-// --- MODIFIED: API Key Pool ---
-AI_CognitionEngine.API_KEYS = ((_d = (_c = process.env.GEMINI_API_KEYS) === null || _c === void 0 ? void 0 : _c.split(',')) === null || _d === void 0 ? void 0 : _d.map(k => k.trim())) || [];
-// Static state to maintain round-robin position across all files/requests
+// --- MODIFIED: Load keys by specific names like Python script ---
+AI_CognitionEngine.API_KEYS = [
+    process.env.GEMINI_API_KEY_N,
+    process.env.GEMINI_API_KEY_A1,
+    process.env.GEMINI_API_KEY_A2,
+    process.env.GEMINI_API_KEY_D,
+    process.env.GEMINI_API_KEY_Di
+].filter((k) => !!k); // Filter undefined/empty
+// Static state for global rotation (Sticky Failover)
 AI_CognitionEngine.currentKeyIndex = 0;
 class FileEntity {
     constructor(fullPath) {
