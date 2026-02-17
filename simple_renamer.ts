@@ -40,19 +40,21 @@ const CONFIG = {
     },
     ai: {
         models: [
-            'gemini-3-flash-preview',      // Primary / first attempt
             'gemini-flash-latest',         // Fallback 1
             'gemini-flash-lite-latest',    // Fallback 2 (corrected typo "fash" → "flash")
             'gemini-2.5-flash',            // Fallback 3
-            'gemini-2.5-flash-lite'        // Fallback 4 (final)
+            'gemini-2.5-flash-lite',        // Fallback 4 (final)
+            'qwen3:1.7b',
+            'gemini-3-flash-preview'      // Primary / first attempt
         ],
+        localEndpoint: 'http://localhost:11434/v1/chat/completions',
         maxRetriesPerModel: 6,
         generationConfig: { responseMimeType: 'application/json', temperature: 0.0 },
     },
     processing: {
         concurrencyLimit: 5,
         minTextLength: 100,
-        maxFilenameLength: 200,
+        maxFilenameLength: 120,
         processedFormatRegex: /^(\d{2,}_)?[^_]+_[^_]+_\d{4}(_[^_]+)*\.pdf$/i,
         backupExtension: '.ske.bak',
     },
@@ -250,99 +252,196 @@ class AI_CognitionEngine {
         }
     }
 
-    private buildPrompt(content: string, name: string, context: ProcessingContext): string {
+    private buildPrompt(content: string, name: string, context: ProcessingContext, isLocalModel: boolean = false): string {
         const hints = context.strategyHints.length > 0 ? `\nStrategic Hints:\n- ${context.strategyHints.join('\n- ')}\n` : '';
-        return `Analyze this document to extract its most meaningful title for file renaming. Context: Part of book "${context.folderArchetype.title}". Filename: "${name}".
-        ${hints}
-        Instructions:
-        1.  **Reasoning**: Explain your logic for title selection.
-        2.  **Document Classification**: Classify as 'book', 'chapter', or 'article'.
-        3.  **Title Selection - CRITICAL**:
-            a. Identify the main title and any subtitle (often separated by a colon ':').
-            b. **Meaningfulness Rule**: Your primary goal is to return a title that best describes the document's content.
-            c. If the main title is purely marketable or a simple listing (e.g., "Welcome to the Revolution", "Chapter 1"), and the subtitle is more descriptive (e.g., "A Case Study on Exercise and the Brain"), you MUST return the subtitle as the main 'title'.
-            d. If both the title and subtitle are descriptive and their combined length is reasonable, you may return them together (e.g., "Chapter 1: Why Clouds are White").
-            e. If the main title is already fully descriptive, ignore the subtitle.
-            f. The final 'title' you return should be the most semantically rich and representative choice.
-        4.  **Metadata Extraction**: Extract 'authors' and 'year'. For articles, also find 'journal' and 'volume'.
-        5.  **Confidence Score**: Provide a "confidence" score (0.0 to 1.0) on your overall analysis.
-        6.  **Format**: Respond in valid JSON.
-        Schema: { "reasoning": "string", "documentType": "book" | "chapter" | "article" | null, "title": "string|null", "authors": ["string"]|null, "year": "string|null", "journal": "string|null", "volume": "string|null", "fileType": "string|null", "confidence": number }
-        ---
-        TEXT: "${content.replace(/\s+/g, ' ').substring(0, 8000)}"`;
+
+        const baseInstructions = `
+    Analyze this document to extract its most meaningful title for file renaming. Context: Part of book "${context.folderArchetype.title}". Filename: "${name}".
+    ${hints}
+    Instructions:
+    1. Reasoning: Explain your logic briefly.
+    2. Document Classification: Classify as 'book', 'chapter', or 'article'.
+    3. Title Selection (CRITICAL): Choose the most descriptive title/subtitle.
+    4. Extract authors, year, journal (for articles), volume.
+    5. Confidence: Score 0.0 to 1.0.
+    `;
+
+        const schema = `{
+    "reasoning": "string",
+    "documentType": "book" | "chapter" | "article" | null,
+    "title": "string" | null,
+    "authors": array of strings | null,
+    "year": "string" | null,
+    "journal": "string" | null,
+    "volume": "string" | null,
+    "fileType": "string" | null,
+    "confidence": number
+    }`;
+
+        if (isLocalModel) {
+            // Versión ultra-estricto para modelos locales (Qwen, Llama, Phi, etc.)
+    return `
+    Focus ONLY on the FIRST FEW PAGES of the text (title/authors/year are almost always there).
+
+    Common title patterns:
+    - Large bold text at the top
+    - After authors list
+    - Before "Abstract" or "Introduction"
+    - Often followed by subtitle after colon ":"
+
+    Ignore headers, footers, page numbers, references.
+
+    If no clear title found in first pages, use the most descriptive section heading.
+            
+    You are an expert document analyzer. Your response MUST be ONLY a valid JSON object, wrapped in \`\`\`json markdown fences. 
+    Do NOT write any explanation, introduction, conclusion, or text outside the JSON. 
+    Do NOT use markdown except for the fences.
+    Do NOW write comments or explanations within the json object outside
+
+    Required exact format:
+
+    \`\`\`json
+    {
+        "reasoning": "brief explanation",
+        "documentType": "article" | "book" | "chapter",
+        "title": "most descriptive title/subtitle (prefer subtitle if more specific)",
+        "authors": ["list"],
+        "year": "string",
+        "journal": "string or null",
+        "volume": "string or null",
+        "fileType": null,
+        "confidence": 0.0-1.0
+    }
+    \`\`\`
+
+    Now analyze the following document text and respond ONLY with the JSON in the format above:
+
+    TEXT: "${content.replace(/\s+/g, ' ').substring(0, 7000)}"`;
+        } else {
+            // Versión original para Gemini (ya funciona bien)
+            return `${baseInstructions}
+    6. Format: Respond in valid JSON.
+    Schema: ${schema}
+    ---
+    TEXT: "${content.replace(/\s+/g, ' ').substring(0, 8000)}"`;
+        }
     }
 
     async analyze(content: string, name: string, context: ProcessingContext): Promise<ValidatedData | null> {
-        const baseRequest = {
-            contents: [{ role: 'user', parts: [{ text: this.buildPrompt(content, name, context) }] }],
-            safetySettings: Object.values(HarmCategory).map(category => ({ category, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE })),
-            generationConfig: CONFIG.ai.generationConfig as GenerationConfig,
-        };
+        const prompt = this.buildPrompt(content, name, context);
 
-        // --- Outer Loop: Iterate through Models (Fallback Strategy) ---
+        // --- OUTER LOOP: Iterate through Models (Fallback Strategy) ---
         for (const model of CONFIG.ai.models) {
+            
+            const isLocalModel = model.includes('qwen') || model.includes('llama') || model.includes('phi');
+
+            // --- LOCAL MODEL LOGIC (Ollama) ---
+            // Local models are attempted once. If they fail, we proceed to the next model in the list.
+            if (isLocalModel) {
+                try {
+                    logger.debug(`Attempting local model: ${model}`);
+                    const endpoint = CONFIG.ai.localEndpoint || 'http://localhost:11434/v1/chat/completions';
+
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model: model,
+                            messages: [{ role: 'user', content: prompt }],
+                            stream: false,
+                            options: { 
+                                temperature: 0.0,
+                                num_gpu: 0,
+                                num_thread: 8,
+                                num_ctx: 32768
+                            }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorBody = await response.text();
+                        throw new Error(`Local server error (${response.status}): ${errorBody}`);
+                    }
+
+                    const data = await response.json();
+                    const resultText = data.choices?.[0]?.message?.content;
+                    if (!resultText) throw new Error('Empty response from local model');
+
+                    logger.debug(`Raw response from local model "${model}" for "${name}":`);
+                    console.log('\x1b[33m=== RAW RESPONSE START ===\x1b[0m');
+                    console.log(resultText);
+                    console.log('\x1b[33m=== RAW RESPONSE END ===\x1b[0m');
+
+                    const parsed = this.parseJsonResponse(resultText, name, context);
+                    if (parsed) {
+                        logger.success(`Success for "${name}" using local model "${model}"`);
+                        return parsed;
+                    } else {
+                        throw new Error('Failed to parse valid JSON from local model');
+                    }
+
+                } catch (error: any) {
+                    logger.error(`Local model "${model}" failed: ${error.message}`);
+                    // Continue to the NEXT model in the outer loop
+                    continue; 
+                }
+            }
+
+            // --- CLOUD MODEL LOGIC (Gemini) ---
+            // Implementation of the resilient "Sticky Failover" with Inner Loop
             
             let cycleCount = 0;
             // Track where we started to detect a full loop through keys
             let startIndexForCycle = AI_CognitionEngine.currentKeyIndex;
 
-            // --- Inner Loop: Rotate through Keys ---
+            // --- INNER LOOP: Rotate through Keys for this specific Model ---
             while (true) {
                 cycleCount++;
                 const apiKey = AI_CognitionEngine.API_KEYS[AI_CognitionEngine.currentKeyIndex];
                 const keyIndexDisplay = AI_CognitionEngine.currentKeyIndex + 1;
 
-                // Safety check: if keys empty
                 if (!apiKey) {
                     logger.error(`API Key at index ${AI_CognitionEngine.currentKeyIndex} is invalid.`);
                     AI_CognitionEngine.currentKeyIndex = (AI_CognitionEngine.currentKeyIndex + 1) % AI_CognitionEngine.API_KEYS.length;
-                    if (AI_CognitionEngine.currentKeyIndex === startIndexForCycle) break; 
+                    if (AI_CognitionEngine.currentKeyIndex === startIndexForCycle) break;
                     continue;
                 }
 
                 try {
-                    // logger.debug(`Attempt ${cycleCount} | Key ${keyIndexDisplay}/${AI_CognitionEngine.API_KEYS.length} | Model ${model}`);
-                    
                     const client = new GoogleGenAI({ apiKey });
+
+                    // Explicit Safety Settings
+                    const safetySettings = [
+                        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+                    ];
+
                     const result = await client.models.generateContent({
                         model,
-                        ...baseRequest
+                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                        config: {
+                            ...CONFIG.ai.generationConfig as GenerationConfig,
+                            safetySettings: safetySettings
+                        }
                     });
 
                     const rawText = result.text;
                     if (!rawText) throw new Error('Empty text response from API');
 
-                    const jsonText = rawText.substring(rawText.indexOf('{'), rawText.lastIndexOf('}') + 1);
-                    const parsed = JSON.parse(jsonText) as LLMResponse;
+                    const parsed = this.parseJsonResponse(rawText, name, context);
+                    if (!parsed) throw new Error('JSON Parsing failed');
 
-                    // SUCCESS LOGIC (Python: sticky failover)
-                    // We stay on this key for the next request (don't increment index).
-                    // We update startIndexForCycle to mark this as the new "start" for future cycles.
+                    // SUCCESS: Update sticky index (start point) for future calls
                     startIndexForCycle = AI_CognitionEngine.currentKeyIndex;
                     
                     logger.success(`Success for "${name}" using model "${model}" (Key ${keyIndexDisplay})`);
-                    
-                    // Data validation
-                    let correctedTitle = parsed.title;
-                    if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
-                        correctedTitle = null;
-                    }
-
-                    return {
-                        title: correctedTitle,
-                        authors: parsed.authors || context.folderArchetype.authors || [],
-                        year: parsed.year || context.folderArchetype.year,
-                        fileType: parsed.fileType,
-                        confidence: parsed.confidence || 0.5,
-                        documentType: parsed.documentType,
-                        journal: parsed.journal,
-                        volume: parsed.volume,
-                    };
+                    return parsed;
 
                 } catch (error: any) {
                     const errStr = (error.message || error.toString()).toLowerCase();
                     
-                    // Python: Detect specific quota vs rate limit
                     const isQuotaError = errStr.includes('quota') || errStr.includes('resourceexhausted') || error?.status === 'RESOURCE_EXHAUSTED';
                     const isTransient = isQuotaError || errStr.includes('429') || errStr.includes('rate limit') || errStr.includes('503') || errStr.includes('unavailable');
 
@@ -355,8 +454,6 @@ class AI_CognitionEngine {
                         // Check if we completed a full cycle (wrapped around to start)
                         if (AI_CognitionEngine.currentKeyIndex === startIndexForCycle) {
                             
-                            // Logic: If it was a Quota Error, we should try the NEXT MODEL.
-                            // If it was a generic Rate Limit/503, we should BACKOFF.
                             if (isQuotaError) {
                                 logger.warn(`Quota exhausted on all keys for model "${model}". Switching to next model.`);
                                 // Reset key index for the new model (optional but clean)
@@ -367,9 +464,9 @@ class AI_CognitionEngine {
                                 // Generic Rate Limit: Backoff and retry same model
                                 logger.warn(`All keys exhausted for model "${model}". Applying backoff...`);
                                 
-                                // Python: Exponential backoff with jitter
+                                // Exponential backoff with jitter
                                 const backoffBase = Math.min(
-                                    CONFIG.retry. INITIAL_BACKOFF_SEC * Math.pow(2, cycleCount - 1), 
+                                    CONFIG.retry.INITIAL_BACKOFF_SEC * Math.pow(2, cycleCount - 1), 
                                     CONFIG.retry.MAX_BACKOFF_SEC
                                 );
                                 const jitter = backoffBase * (1 + (Math.random() * 2 - 1) * CONFIG.retry.JITTER_RANGE);
@@ -377,15 +474,14 @@ class AI_CognitionEngine {
                                 logger.system(`Backoff timer: ${jitter.toFixed(0)} seconds.`);
                                 await new Promise(resolve => setTimeout(resolve, jitter * 1000));
                                 
-                                // After backoff, we continue the while loop (retry same keys)
-                                startIndexForCycle = AI_CognitionEngine.currentKeyIndex; // Reset cycle start
+                                // Reset cycle start to allow retrying keys after backoff
+                                startIndexForCycle = AI_CognitionEngine.currentKeyIndex;
                             }
                         }
-                        // If not a full cycle, just continue loop (try next key immediately)
                     } else {
                         // Non-transient error (e.g. 400 Bad Request, Safety Filter)
                         logger.error(`Permanent error with model "${model}": ${error.message}`);
-                        // Break inner loop to try next model
+                        // Break inner loop to try next model in outer loop
                         break;
                     }
                 }
@@ -394,6 +490,41 @@ class AI_CognitionEngine {
 
         logger.error(`All models and keys failed for "${name}".`);
         return null;
+    }
+
+    // Helper method to keep the main loop clean
+    private parseJsonResponse(rawText: string, name: string, context: ProcessingContext): ValidatedData | null {
+        try {
+            let jsonText = rawText;
+            if (jsonText.includes("```")) {
+                jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            }
+            
+            const startIndex = jsonText.indexOf('{');
+            const endIndex = jsonText.lastIndexOf('}');
+            if (startIndex === -1 || endIndex === -1) return null;
+
+            jsonText = jsonText.substring(startIndex, endIndex + 1);
+            const parsed = JSON.parse(jsonText) as LLMResponse;
+
+            let correctedTitle = parsed.title;
+            if (parsed.title && context.folderArchetype.title && parsed.title.toLowerCase().includes(context.folderArchetype.title.toLowerCase())) {
+                correctedTitle = null;
+            }
+
+            return {
+                title: correctedTitle,
+                authors: parsed.authors || context.folderArchetype.authors || [],
+                year: parsed.year || context.folderArchetype.year,
+                fileType: parsed.fileType,
+                confidence: parsed.confidence || 0.5,
+                documentType: parsed.documentType,
+                journal: parsed.journal,
+                volume: parsed.volume,
+            };
+        } catch {
+            return null;
+        }
     }
 }
 
@@ -417,7 +548,10 @@ class FileEntity {
     async readContent(): Promise<string | null> {
         try {
             const dataBuffer = await fs.readFile(this.fullPath);
-            const data = await pdf(dataBuffer, { max: this.typeInfo.isStructural ? 5 : 10 });
+            const data = await pdf(dataBuffer, { 
+                pagerender: (pageData) => pageData.getTextContent().then((text: { items: any[]; }) => text.items.map(i => i.str).join(' ')),
+                max: 5  // ← cambia a 5 (o incluso 3 para artículos)
+            });
             return data.text;
         } catch (error) { return null; }
     }
@@ -513,20 +647,41 @@ class SystemCore {
     }
 
     private formatBaseFilename(data: ValidatedData, typeInfo: FileTypeInfo): string | null {
+        // --- Funciones Auxiliares de Formateo ---
+
+        // 1. Eliminador de palabras vacías (Stop Words) para acortar manteniendo significado
+        const removeStopWords = (text: string): string => {
+            const stopWords = new Set(['a', 'an', 'the', 'and', 'of', 'for', 'in', 'on', 'with', 'to', 'by', 'from', 'is', 'are']);
+            return text.split(/\s+/)
+                .filter(word => !stopWords.has(word.toLowerCase()))
+                .join(' ');
+        };
+
+        // 2. Formateador de Texto Mejorado
         const formatText = (input: string, mode: 'title' | 'author'): string => {
             let text = input;
+            // Normalizar caracteres especiales (mapeo definido globalmente)
             if (mode === 'author') text = text.split('').map(char => specialCharMap[char] || char).join('');
+            
+            // Limpiar caracteres problemáticos
             text = text.replace(/[\\/&'"`]/g, '');
 
             if (mode === 'title') {
+                // Aplicar limpieza de palabras vacías ANTES de formatear
+                text = removeStopWords(text);
+                
+                // Reemplazar puntuación por guiones
                 text = text.replace(/[,.;:!?]+/g, '-');
+                // Normalizar posesivos
                 text = text.replace(/(\w+)'(\w+)/g, '$1s');
                 text = text.replace(/(\w+)’(\w+)/g, '$1s');
             } else {
                 text = text.replace(/[,.\s]+/g, '-');   
             }
+            
             text = text.replace(/\s*-\s*/g, '-');
 
+            // Convertir a PascalCase / CamelCase
             if (mode === 'author') {
                 return text.split('-').map(part => part.trim().replace(/\s+/g, '')).join('-');
             } else {
@@ -536,42 +691,86 @@ class SystemCore {
             }
         };
 
+        // 3. Formateador de Autores
         const formatAuthors = (authors: string[]): string => {
             if (!authors || authors.length === 0) return '';
             if (authors.length === 1) {
                 return formatText(authors[0], 'author');
             }
-            // Si hay 2 o más autores: Primer autor + "EtAl"
             return `${formatText(authors[0], 'author')}-EtAl`;
         };
         
+        // --- LÓGICA DE PRESUPUESTO DE CARACTERES ---
+        
+        const SAFE_MAX = CONFIG.processing.maxFilenameLength; // 120 caracteres
         const { title, authors, year, fileType, documentType, journal, volume } = data;
+
+        // A. Calcular longitudes de partes FIJAS (Metadata obligatoria)
+        const authorsStr = formatAuthors(authors);
+        const yearStr = year || '';
+        
+        // Para artículos
+        const journalStr = journal ? `J-${formatText(journal, 'title')}` : '';
+        const volumeStr = volume ? `V${formatText(volume, 'author')}` : '';
+        
+        // Para libros
+        const fileTypeStr = fileType ? formatText(fileType, 'title') : '';
+        const enumStr = (typeInfo.isChapter && typeInfo.enumeration) ? typeInfo.enumeration.padStart(2, '0') : '';
+
+        // Calcular espacio ocupado por metadata + separadores
+        // Unimos partes fijas para medir
+        const fixedParts = [authorsStr, yearStr, journalStr, volumeStr, fileTypeStr, enumStr].filter(Boolean);
+        const fixedLength = fixedParts.reduce((acc, p) => acc + p.length, 0) + fixedParts.length; // +1 underscore por parte
+
+        // B. Calcular presupuesto para el Título
+        // Dejamos un pequeño margen de seguridad (5 chars)
+        const titleBudget = Math.max(20, SAFE_MAX - fixedLength - 5);
+
+        let finalTitle = '';
+        if (title) {
+            finalTitle = formatText(title, 'title');
+            // Si el título excede el presupuesto, lo truncamos
+            if (finalTitle.length > titleBudget) {
+                finalTitle = finalTitle.substring(0, titleBudget);
+            }
+        }
+
+        // C. Ensamblaje Final
+        const finalParts: string[] = [];
 
         switch (documentType) {
             case 'article': {
-                if (!title || !authors || authors.length === 0 || !year || !/^\d{4}$/.test(year)) return null;
-                const formattedAuthors = formatAuthors(authors); // CAMBIADO
-                const finalParts: string[] = [formatText(title, 'title'), formattedAuthors, year];
-                if (journal) finalParts.push(`J-${formatText(journal, 'title')}`);
-                if (volume) finalParts.push(`V${formatText(volume, 'author')}`);
-                return finalParts.join('_').substring(0, CONFIG.processing.maxFilenameLength);
+                if (!finalTitle || !authorsStr || !yearStr) return null;
+                finalParts.push(finalTitle);
+                finalParts.push(authorsStr);
+                finalParts.push(yearStr);
+                if (journalStr) finalParts.push(journalStr);
+                if (volumeStr) finalParts.push(volumeStr);
+                break;
             }
-
             case 'book':
             case 'chapter':
             default: {
-                if (!title && !typeInfo.isStructural) return null;
+                if (!finalTitle && !typeInfo.isStructural) return null;
                 if (year && !/^\d{4}$/.test(year)) return null;
-                const finalParts: string[] = [];
-                if (typeInfo.isChapter && typeInfo.enumeration) finalParts.push(typeInfo.enumeration.padStart(2, '0'));
-                if (title) finalParts.push(formatText(title, 'title'));
-                if (authors && authors.length > 0) finalParts.push(formatAuthors(authors)); // CAMBIADO
-                if (year) finalParts.push(year);
-                if (fileType) finalParts.push(formatText(fileType, 'title'));
-                if (finalParts.length === 0) return null;
-                return finalParts.filter(Boolean).join('_').substring(0, CONFIG.processing.maxFilenameLength);
+
+                if (enumStr) finalParts.push(enumStr);
+                if (finalTitle) finalParts.push(finalTitle);
+                if (authorsStr) finalParts.push(authorsStr);
+                if (yearStr) finalParts.push(yearStr);
+                if (fileTypeStr) finalParts.push(fileTypeStr);
+                break;
             }
         }
+
+        const result = finalParts.filter(Boolean).join('_');
+        
+        // D. Filtro final de seguridad absoluta
+        if (result.length > SAFE_MAX) {
+            return result.substring(0, SAFE_MAX);
+        }
+        
+        return result;
     }
 
     private hasAbnormallyLongWord(filename: string): boolean {
@@ -717,7 +916,10 @@ class SystemCore {
             return { hasFailures: false, shouldContinue: false };
         }
         const entities = allPaths.map(p => new FileEntity(p));
+        
+        // En modo Dry Run, acumulamos el manifiesto. En Live, no es necesario acumularlo.
         const manifest: { entity: FileEntity, newName: string }[] = [];
+        
         logger.system(`Cognitive analysis phase starting for ${entities.length} entities...`);
         const progressBar = new ProgressBar(entities.length);
         const limit = pLimit(this.strategyEngine.getConcurrency());
@@ -725,7 +927,17 @@ class SystemCore {
         const tasks = entities.map(entity => limit(async () => {
             try {
                 const result = await this.processEntity(entity, context, journalMemory);
-                if (result) manifest.push({ entity: result.entity, newName: result.to });
+                
+                if (result) {
+                    if (isDryRun) {
+                        // MODO DRY RUN: Solo acumulamos para mostrar el resumen al final
+                        manifest.push({ entity: result.entity, newName: result.to });
+                    } else {
+                        // MODO LIVE: RENOMBRAR INMEDIATAMENTE
+                        const renameStart = Date.now();
+                        await this.lifecycleManager.rename(result.entity, result.to, renameStart);
+                    }
+                }
             } catch (e) {
                 logger.error(`Unhandled error processing "${entity.name}"`, e as Error);
                 await this.journal.record({ file: entity.name, status: 'FAILURE_AI', details: `Unhandled exception: ${(e as Error).message}`, durationMs: 0 });
@@ -736,32 +948,26 @@ class SystemCore {
 
         await Promise.all(tasks);
 
+        // Análisis de resultados del ciclo
         const journalAfter = await this.journal.read();
         const cycleEntries = journalAfter.slice(previousLength);
         const failureStatuses: JournalEntryStatus[] = ['FAILURE_PARSE', 'FAILURE_AI', 'FAILURE_RENAME', 'SKIPPED_LOW_CONF'];
         const hasFailures = cycleEntries.some(e => failureStatuses.includes(e.status));
         const onlyGoodSkips = cycleEntries.length > 0 && cycleEntries.every(e => ['PROCESSED', 'SKIPPED_NO_CHANGE', 'SUCCESS'].includes(e.status));
 
+        // Lógica de salida temprana si no hay nada que hacer
         if (manifest.length === 0 && onlyGoodSkips) return { hasFailures: false, shouldContinue: false };
 
+        // Lógica de impresión solo para Dry Run
         if (isDryRun) {
             console.log('\n\x1b[1;33m--- OPERATIONAL MANIFEST: DRY RUN ---\x1b[0m');
             logger.info(`Planned ${manifest.length} renaming operations.`);
             manifest.forEach(m => logger.trace(m.entity.name, m.newName));
             logger.info('No files changed (dry run).');
-        } else {
-            console.log(`\n\x1b[1;32m--- EXECUTING ${manifest.length} RENAMES ---\x1b[0m`);
-            if (manifest.length > 0) {
-                logger.trace(manifest[0].entity.name, manifest[0].newName);
-                console.log('(further traces suppressed for brevity)');
-            }
-            const renameLimit = pLimit(5);
-            const renameTasks = manifest.map(m => renameLimit(async () => {
-                const start = Date.now();
-                await this.lifecycleManager.rename(m.entity, m.newName, start);
-            }));
-            await Promise.all(renameTasks);
         }
+
+        // Se elimina el bloque de ejecución de renombres que estaba aquí, 
+        // porque ahora se ejecutan dentro del bucle (arriba).
 
         return { hasFailures, shouldContinue: true };
     }

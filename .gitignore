@@ -3,3 +3,8 @@ node_modules/
 TEMP/
 FINAL/*
 FILES/*
+simple_renamer.txt
+contextualizer.sh
+context_unifier.py
+RENAMER.txt
+PDF-RENAMER.txt

@@ -40,6 +40,17 @@ Follow these steps to prepare the Sentient Knowledge Engine for its first activa
 
 SKE is activated from your terminal. It operates with a strong emphasis on safety and user consent, distinguishing between a "dry run" (to preview changes) and a "live" activation (to perform the renaming).
 
+**Step 0: Setup the Server**
+
+In an isolated server
+```bash
+export CUDA_VISIBLE_DEVICES=""
+export CUDA_VISIBLE_DEVICES=-1
+unset OLLAMA_NUM_GPU_LAYERS
+ollama run qwen3:1.7b
+ollama serve
+```
+
 **Step 1: Place Your PDFs**
 
 By default, SKE will look for files in a `./ManagedLibrary` folder. You can either create this folder and place your PDFs inside, or you can specify a different directory during activation.
